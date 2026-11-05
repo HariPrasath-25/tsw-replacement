@@ -12,6 +12,7 @@
     "db:lint": "node db/tools/lint.js",
     "db:equiv": "node db/tools/equiv.js",
     "db:bench": "node db/tools/bench.js",
+    "db:dict": "node db/tools/dictionary.js",
     "test": "node db/tools/test.js"
   },
   "dependencies": {

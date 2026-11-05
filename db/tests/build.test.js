@@ -110,3 +110,8 @@ test('npm run db:build creates a fresh file and reports the SQLite version', () 
   assert.match(r.stdout, /sqlite_version\(\) = 3\.\d+\.\d+/);
   assert.match(r.stdout, /48 tables/);
 });
+
+test('docs/db/DATA_DICTIONARY.md is generated from the current schema (not stale)', () => {
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'db/tools/dictionary.js'), '--check'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr + ' — run: node db/tools/dictionary.js');
+});
