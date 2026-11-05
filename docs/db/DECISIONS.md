@@ -70,6 +70,6 @@ The linter accepts an allowlist entry only if its ADR heading exists in this fil
 - *Keep a single file and diff it.* Rejected: every milestone would rewrite one large file, reviews would be noisy, and smoke tests couldn't map to areas.
 - *Migrations from day one.* Rejected: before schema freeze, CLAUDE.md wants the modules to be the truth and migrations only after the freeze.
 - *Fix the lint findings in M0.* Rejected: M0 makes no schema changes, and each fix belongs to the milestone that owns its finding.
-- *Python `sqlite3` harness.* Not needed: Node 20+ with better-sqlite3 13.0.3 (SQLite 3.53.4) installs cleanly on the target.
+- *Python `sqlite3` harness.* Not needed: Node 20+ with better-sqlite3 13.0.3 (SQLite 3.53.4) installs cleanly on the target. better-sqlite3 13 ships N-API prebuilds (`gypfile: false`), but `npm ci` still tries a node-gyp build from the lockfile, which needs Visual Studio. The repo's `.npmrc` therefore sets `ignore-scripts=true`. No dependency needs an install script, and this also blocks dependency install scripts (req 104).
 
 **PostgreSQL portability.** The module and lint structure carries over unchanged. Lint would read `information_schema` / `pg_catalog` instead of SQLite pragmas. STRICT maps to native typing, WITHOUT ROWID maps to a composite PK (optionally clustered with BRIN or partitioning), and `json_valid` CHECKs map to `jsonb` columns.
