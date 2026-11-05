@@ -1,0 +1,20 @@
+{
+  "name": "omniconn-workstation-db",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SQLite schema, seed data, tests and docs for the Omniconn Fire Alarm Workstation monitoring service",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "db:build": "node db/tools/build.js",
+    "db:lint": "node db/tools/lint.js",
+    "db:equiv": "node db/tools/equiv.js",
+    "db:bench": "node db/tools/bench.js",
+    "test": "node db/tools/test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3"
+  }
+}
