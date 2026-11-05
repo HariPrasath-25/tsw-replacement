@@ -2,6 +2,7 @@
 // Shared build logic for db:build, db:lint, db:equiv and the test helpers.
 // The schema is the ordered list of db/schema/NN_<area>.sql modules, then db/seed/NN_<area>.sql.
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
@@ -44,6 +45,19 @@ function assertSqliteVersion(db) {
 // File-creation pragmas (page_size, auto_vacuum, application_id...) must run on the empty file,
 // before the first CREATE. Convention: they live in 00_header.sql, one PRAGMA statement per line,
 // starting at the beginning of the line (a PRAGMA inside a -- comment is documentation, not code).
+const USER_VERSION = /^PRAGMA\s+user_version\s*=\s*(\d+)\s*;$/i;
+
+/** sha256 (lowercase hex) of a module's text exactly as read from disk (migration log checksum). */
+function moduleChecksum(text) {
+  return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+/** First comment line of a module (its banner), used as the migration-log description. */
+function moduleDescription(text, name) {
+  const m = /^--\s*(.+)$/m.exec(text);
+  return m ? m[1].trim() : name;
+}
+
 const PRAGMA_LINE = /^[ \t]*PRAGMA\s+[^;]+;\s*(--.*)?$/i;
 
 function splitHeaderPragmas(sql) {
@@ -91,18 +105,41 @@ function buildDatabase(target = ':memory:', opts = {}) {
       }
       if (i === 0) { m.pragmas = pragmas; m.code = rest; }
     });
-    for (const p of modules[0].pragmas || []) db.exec(p);
+    // user_version is the schema version of record (N5, ADR-004). It is NOT a file-creation pragma:
+    // it is set last, inside the build transaction, after foreign_key_check, so a failed build leaves 0.
+    const header = modules[0].pragmas || [];
+    const uv = header.map((p) => USER_VERSION.exec(p)).find(Boolean);
+    const filePragmas = header.filter((p) => !USER_VERSION.test(p));
+    for (const p of filePragmas) db.exec(p);
     if (db.prepare('SELECT count(*) AS n FROM sqlite_schema').get().n !== 0) {
       throw new Error('a header PRAGMA created schema objects');
     }
-    if (opts.onPragmas) opts.onPragmas(db, modules[0].pragmas || []);
+    if (opts.onPragmas) opts.onPragmas(db, filePragmas);
 
-    // 2. DDL + seed in one transaction (atomic build).
+    // 2. DDL + seed + migration log + user_version in one transaction (atomic build).
     db.pragma('foreign_keys = ON');
     db.exec('BEGIN IMMEDIATE');
     try {
-      for (const m of [...modules, ...seed.map((s) => ({ ...s, code: s.sql }))]) {
+      const all = [...modules, ...seed.map((s) => ({ ...s, code: s.sql, kind: 'seed' }))];
+      for (const m of all) {
         try { db.exec(m.code); } catch (e) { e.message = `${m.name}: ${e.message}`; throw e; }
+      }
+      if (uv) {
+        const version = Number(uv[1]);
+        const hasLog = db.prepare(`SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'schema_version'`).get();
+        if (hasLog) {
+          const ins = db.prepare(`INSERT INTO schema_version (version, module, checksum, applied_at, applied_by, description)
+                                  VALUES (?, ?, ?, ?, ?, ?)`);
+          const now = opts.appliedAt || Date.now();
+          for (const m of all) {
+            ins.run(version, (m.kind === 'seed' ? 'seed/' : '') + m.name, moduleChecksum(m.sql), now,
+              opts.appliedBy || 'db:build', moduleDescription(m.sql, m.name));
+          }
+        }
+        if (opts.beforeUserVersion) opts.beforeUserVersion(db);
+        const fk = db.pragma('foreign_key_check');
+        if (fk.length) throw new Error('foreign_key_check failed: ' + JSON.stringify(fk.slice(0, 5)));
+        db.pragma(`user_version = ${version}`);
       }
       db.exec('COMMIT');
     } catch (e) {
@@ -161,6 +198,6 @@ function objectsDefinedIn(sql) {
 
 module.exports = {
   ROOT, SCHEMA_DIR, SEED_DIR, REFERENCE_FILE, BUILD_FILE, MIN_SQLITE,
-  listModules, versionAtLeast, assertSqliteVersion, splitHeaderPragmas, assertIntegrity,
+  listModules, versionAtLeast, moduleChecksum, USER_VERSION, assertSqliteVersion, splitHeaderPragmas, assertIntegrity,
   buildDatabase, buildFromFile, schemaRows, tableDetail, objectsDefinedIn,
 };

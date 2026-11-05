@@ -11,24 +11,24 @@ function setup() {
   f.otherTenantId = insert(db, 'tenant', { name: 'Other Tenant', created_at: T0 });
   f.otherSiteId = insert(db, 'site', { tenant_id: f.otherTenantId, name: 'Other Site', timezone: 'Asia/Dubai', created_at: T0 });
   f.otherSpaceId = insert(db, 'space', { site_id: f.otherSiteId, type: 'building', name: 'Other Building' });
-  f.syncId = insert(db, 'command_type', { system: 'fire', code: 'sync_clock', name: 'Sync clock', target: 'controller', permission_id: f.permissionId, allow_schedule: 1 });
+  f.syncId = insert(db, 'command_type', { system: 'fire', code: 'sync_clock', name: 'Sync clock', target: 'controller', permission_id: f.permissionId, can_schedule: 1 });
   f.silenceId = insert(db, 'command_type', { system: 'fire', code: 'silence', name: 'Silence', target: 'controller', permission_id: f.permissionId });
   return { db, f };
 }
 
 const schedule = (f, commandTypeId) => ({
   name: 'S', command_type_id: commandTypeId, site_id: f.siteId, controller_id: f.controllerId,
-  interval_sec: 3600, created_by: f.userId, created_at: T0,
+  interval_sec: 3600, created_by_user_account_id: f.userId, created_at: T0, updated_at: T0,
 });
 
 const TESTED = {
-  trg_schedule_allowed({ db, f }) {
+  trg_command_schedule_allowed({ db, f }) {
     insert(db, 'command_schedule', schedule(f, f.syncId)); // allowed type: OK
-    expectAbort(db, `INSERT INTO command_schedule (name, command_type_id, site_id, controller_id, interval_sec, created_by, created_at)
-                     VALUES ('S', ?, ?, ?, 3600, ?, ?)`, 'this command type cannot be scheduled',
-    [f.silenceId, f.siteId, f.controllerId, f.userId, T0]);
+    expectAbort(db, `INSERT INTO command_schedule (name, command_type_id, site_id, controller_id, interval_sec, created_by_user_account_id, created_at, updated_at)
+                     VALUES ('S', ?, ?, ?, 3600, ?, ?, ?)`, 'this command type cannot be scheduled',
+    [f.silenceId, f.siteId, f.controllerId, f.userId, T0, T0]);
   },
-  trg_schedule_allowed_upd({ db, f }) {
+  trg_command_schedule_allowed_upd({ db, f }) {
     const id = insert(db, 'command_schedule', schedule(f, f.syncId));
     expectAbort(db, 'UPDATE command_schedule SET command_type_id = ? WHERE id = ?', 'this command type cannot be scheduled', [f.silenceId, id]);
   },
@@ -41,17 +41,23 @@ const TESTED = {
     const id = insert(db, 'user_role', { user_id: f.userId, role_id: f.roleId, tenant_id: f.tenantId, site_id: f.siteId, granted_at: T0 });
     expectAbort(db, 'UPDATE user_role SET site_id = ? WHERE id = ?', 'user_role scope', [f.otherSiteId, id]);
   },
-  trg_group_role_scope({ db, f }) {
-    expectAbort(db, `INSERT INTO directory_group_role (group_sid, role_id, tenant_id, site_id) VALUES ('S-1-5-32-544', ?, ?, ?)`,
-      'directory_group_role scope', [f.roleId, f.tenantId, f.otherSiteId]);
+  trg_directory_group_role_scope({ db, f }) {
+    expectAbort(db, `INSERT INTO directory_group_role (group_sid, role_id, tenant_id, site_id, created_at, updated_at) VALUES ('S-1-5-32-544', ?, ?, ?, ?, ?)`,
+      'directory_group_role scope', [f.roleId, f.tenantId, f.otherSiteId, T0, T0]);
   },
-  trg_audit_no_update({ db, f }) {
+  trg_audit_log_no_update({ db, f }) {
     const id = insert(db, 'audit_log', { at: T0, user_id: f.userId, action: 'auth.login', outcome: 'success', prev_hash: hex(64, '0'), row_hash: hex(64) });
     expectAbort(db, `UPDATE audit_log SET outcome = 'failed' WHERE id = ?`, 'audit_log is append-only', [id]);
   },
-  trg_audit_no_delete({ db, f }) {
+  trg_audit_log_no_delete({ db, f }) {
     const id = insert(db, 'audit_log', { at: T0, user_id: f.userId, action: 'auth.login', outcome: 'success', prev_hash: hex(64, '0'), row_hash: hex(64) });
     expectAbort(db, 'DELETE FROM audit_log WHERE id = ?', 'audit_log is append-only', [id]);
+  },
+  trg_schema_version_no_update({ db }) {
+    expectAbort(db, `UPDATE schema_version SET description = 'x' WHERE module = '00_header'`, 'schema_version: append-only');
+  },
+  trg_schema_version_no_delete({ db }) {
+    expectAbort(db, `DELETE FROM schema_version WHERE module = '00_header'`, 'schema_version: append-only');
   },
   trg_event_no_update({ db, f }) {
     const id = insert(db, 'event', { gateway_id: f.gatewayId, gateway_hardware_id: f.gatewayHardwareId, source_event_id: 'x', event_type: 'status', rcv_time: T0, raw_json: '{}' });

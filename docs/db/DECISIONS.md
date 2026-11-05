@@ -74,3 +74,87 @@ The linter accepts an allowlist entry only if its ADR heading exists in this fil
 - *Python `sqlite3` harness.* Not needed: Node 20+ with better-sqlite3 13.0.3 (SQLite 3.53.4) installs cleanly on the target. better-sqlite3 13 ships N-API prebuilds (`gypfile: false`), but `npm ci` still tries a node-gyp build from the lockfile, which needs Visual Studio. The repo's `.npmrc` therefore sets `ignore-scripts=true`. No dependency needs an install script, and this also blocks dependency install scripts (req 104).
 
 **PostgreSQL portability.** The module and lint structure carries over unchanged. Lint would read `information_schema` / `pg_catalog` instead of SQLite pragmas. STRICT maps to native typing, WITHOUT ROWID maps to a composite PK (optionally clustered with BRIN or partitioning), and `json_valid` CHECKs map to `jsonb` columns.
+
+---
+
+## ADR-001 ON DELETE policy
+
+- **Status:** Accepted
+- **Date:** 2026-11-05 · **Milestone:** M1 · **Closes:** D11 · **Requirements:** 49, 50, 51, 97, G7
+
+**Context.** In Draft v2, 78 of 80 FKs use the implicit `NO ACTION`. The other two are `CASCADE`: `plan_placement.floor_plan_id` and `user_role.user_id`. Both could silently delete rows with history value. CLAUDE.md convention 3 asks for a deliberate policy. The schema owner decided the history-loss cases on 2026-11-05: RESTRICT for actor columns, RESTRICT for the two former CASCADEs, and RESTRICT for ops links.
+
+**Decision.** Every FK declares `ON DELETE`. The default is `RESTRICT`. It fails at the statement, not at COMMIT the way deferred NO ACTION does. Master data (tenant, site, space, gateway, controller, device, user_account, floor_plan) is soft-deleted (`status`, `discovery_state`, `is_current`), so a RESTRICT is never hit in normal operation. It only stops a buggy or manual hard delete.
+
+| Table.column → parent | ON DELETE | Why |
+|---|---|---|
+| site.tenant_id, space.site_id, space.parent_id, floor_plan.space_id | RESTRICT | Master-data hierarchy; soft-deleted |
+| plan_placement.floor_plan_id | RESTRICT (was CASCADE) | Placements must survive for plan rollback (G7, req 39) |
+| plan_placement.device_id / controller_id / gateway_id | RESTRICT | Placement history of master data |
+| gateway.space_id, controller.space_id, device.space_id | **SET NULL** | Optional by design; a mutable "where installed" pointer, not history. Location history lives in plan_placement and audit_log |
+| gateway.site_id, controller.gateway_id, device.controller_id, device.device_type_id, device_type.device_category_id, vendor_type_map.device_type_id | RESTRICT | Master/reference data |
+| gateway_hardware.gateway_id, device_hardware.device_id / controller_id | RESTRICT | Hardware history (req 26–28) |
+| device_tag.device_id | CASCADE | Pure child, no meaning alone |
+| device_state.device_id | CASCADE | Current-value cache; history is device_state_history |
+| device_state_history.device_id | RESTRICT | History (req 17) |
+| event.* (gateway, gateway_hardware, controller, device, alarm_class) | RESTRICT | Alarm log (req 49) |
+| alarm.* (raised/cleared event, site, controller, device, alarm_class) | RESTRICT | Alarm history; retention removes alarms before their events (M11) |
+| device_type_telemetry.device_type_id | CASCADE | Config child of a device type |
+| device_type_telemetry / vendor_key_map / telemetry / gateway_telemetry / telemetry_rollup .telemetry_key_id | RESTRICT | Reference data with history attached |
+| telemetry.device_id, gateway_telemetry.gateway_id, gateway_health.gateway_id, quarantine.gateway_id | RESTRICT | Readings and integrity history (req 95) |
+| command_type.permission_id, command_schedule.*, schedule_run.command_schedule_id | RESTRICT | Config with history attached |
+| command.* incl. session_id, schedule_run_id | RESTRICT | Command log (req 9–12, 50) |
+| role_permission.role_id | CASCADE | Pure link row; role changes are audited |
+| role_permission.permission_id | RESTRICT | A permission in use cannot vanish |
+| user_role.user_id | RESTRICT (was CASCADE) | Users are disabled, not deleted |
+| user_role / directory_group_role .role_id, tenant_id, site_id, space_id | RESTRICT | Scope must stay resolvable |
+| session.user_id, document_acceptance.user_id | RESTRICT | Identity history (req 72) |
+| audit_log.user_id, audit_log.session_id | RESTRICT | Audit is never deleted (req 50), so sessions it references are kept too |
+| update_history.backup_run_id | RESTRICT | Update provenance (req 116–120) |
+| every `*_by_user_account_id` actor column | RESTRICT | Attribution must never be lost |
+
+**Alternatives.** *SET NULL on actor columns:* rejected, it loses attribution. *SET NULL on session/backup links so retention can purge them:* rejected; the rows are small, and the audit link has more value. *Keep NO ACTION:* rejected, because it's implicit and is checked only at COMMIT.
+
+**PostgreSQL portability.** The same `ON DELETE RESTRICT | CASCADE | SET NULL` clauses work unchanged.
+
+## ADR-002 FK-index exceptions
+
+- **Status:** Accepted
+- **Date:** 2026-11-05 · **Milestone:** M1 · **Closes:** P5 (part 1) · **Requirements:** 99, T1, T7, T8
+
+**Context.** Convention 4 wants an index on every FK. Draft v2 had 60 FK columns without one, and M1 adds about 30 actor columns. The CLAUDE.md alarm-path rule requires a benchmark for any new index on a hot table, and M1 has no benchmark harness yet (M12).
+
+**Decision.** M1 indexes every FK on config, master and low-volume history tables, using partial `WHERE col IS NOT NULL` indexes for optional columns. The rest stay in `lint-allow.json` with this ADR:
+- **Standing:** `*_by_user_account_id` actor columns. user_account is never hard-deleted, so the RESTRICT parent check never runs, and "what did user X do" is answered from audit_log.
+- **Standing:** `telemetry`, `gateway_telemetry` and `telemetry_rollup` `.telemetry_key_id`. telemetry_key is reference data, and an extra index on a WITHOUT ROWID raw table roughly doubles its write cost.
+- **Deferred (tag `deferred`, milestone in the entry):** FKs on `event`, `alarm` (M5), `command` (M6) and `audit_log` (M9). Those milestones choose the access-path indexes (P5) with a benchmark.
+
+**Alternatives.** *Index everything now:* rejected. It adds about 70 indexes, including on hot ingest paths, with no measurement.
+
+**PostgreSQL portability.** PostgreSQL also doesn't index FKs automatically, so the same list applies. Partial indexes map one to one.
+
+## ADR-003 Connection profile and checkpoint ownership
+
+- **Status:** Accepted (the numbers are proposed defaults, to revisit after the M12 benchmarks)
+- **Date:** 2026-11-05 · **Milestone:** M1 · **Closes:** P1 · **Requirements:** 97, 99, T1, T7
+
+**Context.** Draft v2 stated the durability pragmas in a comment only. Req 97 says nothing is acknowledged before it's durable. The single writer runs with `wal_autocheckpoint=0`, so the service must own checkpointing, or the WAL grows without bound.
+
+**Decision.** `db/tools/connection.js` is the reference profile. `openWriter` and `openReader` set and then **assert** every setting. `assertProfile` throws on any mismatch, and the service must refuse to start on a failure. The settings, the checkpoint policy (PASSIVE every 30 s or at 1,000 WAL pages, TRUNCATE after 60 s idle, WAL-size warning at 64 MB and Trouble at 256 MB) and the commit-before-ack rule are in `docs/db/CONNECTION_PROFILE.md`. DEFENSIVE comes from better-sqlite3 (on by default, `unsafeMode()` is never called) and is asserted by behaviour. `mmap_size=0`, because an I/O fault on a mapped page crashes the process instead of returning `SQLITE_IOERR`.
+
+**Alternatives.** *`wal_autocheckpoint=1000` (the SQLite default):* rejected. The checkpoint would run inside an ingest commit and add latency to the alarm path (T1). *`synchronous=NORMAL` in WAL:* rejected. It can lose the last transactions on power loss, which conflicts with req 97.
+
+**PostgreSQL portability.** It maps to `synchronous_commit=on`, `fsync=on` and `full_page_writes=on`. Checkpointing belongs to the server (`checkpoint_timeout`, `max_wal_size`). There's no DEFENSIVE equivalent; role privileges cover it.
+
+## ADR-004 user_version as schema version; schema_version as migration log
+
+- **Status:** Accepted
+- **Date:** 2026-11-05 · **Milestone:** M1 · **Closes:** N5, P3 · **Requirements:** 97, 116–120
+
+**Context.** Draft v2 kept the version in a `schema_version` table and never set `PRAGMA user_version`. That leaves two sources of truth and no proof of which DDL was applied.
+
+**Decision.** `PRAGMA user_version` is the schema version of record. It's 3 for the v3 schema under development. `00_header.sql` declares it. The build sets it last, inside the build transaction, after `foreign_key_check`, so a failed build leaves 0. `schema_version` becomes an append-only migration log, blocked by triggers, with these columns: `(version, module, checksum = sha256 of the module text, applied_at, applied_by = process identity, description)` and `UNIQUE(version, module)`. `applied_by` is TEXT because migrations are applied by a process, not by a user. `PRAGMA application_id = 0x4F4D4E49` ('OMNI') marks Omniconn files. After the schema freeze, each migration is one transaction that appends its row and bumps `user_version`.
+
+**Alternatives.** *Keep the version in the table only:* rejected. `user_version` sits in the file header and can be read without parsing the schema.
+
+**PostgreSQL portability.** There's no `user_version`; a one-row `schema_meta` table or a migration tool's table replaces it. The `application_id` check turns into a database comment or that metadata table.

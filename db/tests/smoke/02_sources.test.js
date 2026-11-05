@@ -8,7 +8,7 @@ test('02_sources: every table accepts a valid row', () => {
   insert(db, 'vendor_type_map', { vendor: 'Simplex', vendor_type: 'SMOKE DETECTOR', device_type_id: f.deviceTypeId });
   insert(db, 'device_hardware', {
     device_id: f.deviceId, controller_id: f.controllerId, address: 'L1-M1', address_json: '{"loop":1,"point":"M1"}',
-    vendor_type: 'SMOKE DETECTOR', installed_at: T0, changed_by: f.userId,
+    vendor_type: 'SMOKE DETECTOR', installed_at: T0, changed_by_user_account_id: f.userId,
   });
   insert(db, 'device_tag', { device_id: f.deviceId, tag: 'kitchen' });
   insert(db, 'device_state', {

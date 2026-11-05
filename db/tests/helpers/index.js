@@ -47,8 +47,24 @@ function assertNoScan(plan, tables = ['event', 'alarm', 'device', 'audit_log']) 
   }
 }
 
-/** INSERT a row given as an object; returns the new rowid. */
+// Per-handle cache of each table's column names (for the P8 audit-column defaults below).
+const columnCache = new WeakMap();
+function tableColumns(db, table) {
+  let m = columnCache.get(db);
+  if (!m) columnCache.set(db, (m = new Map()));
+  if (!m.has(table)) m.set(table, new Set(db.pragma(`table_xinfo("${table}")`).map((c) => c.name)));
+  return m.get(table);
+}
+
+/**
+ * INSERT a row given as an object; returns the new rowid.
+ * Mutable config tables (P8) require created_at / updated_at: when the row omits them they default to T0,
+ * so fixtures stay focused on the columns under test. Pass them explicitly to test their CHECKs.
+ */
 function insert(db, table, row) {
+  const cols0 = tableColumns(db, table);
+  row = { ...row };
+  for (const c of ['created_at', 'updated_at']) if (cols0.has(c) && !(c in row)) row[c] = T0;
   const cols = Object.keys(row);
   const sql = `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map((c) => '@' + c).join(', ')})`;
   return Number(db.prepare(sql).run(row).lastInsertRowid);
