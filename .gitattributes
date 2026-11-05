@@ -1,0 +1,4 @@
+* text=auto eol=lf
+# Frozen baseline: keep byte-for-byte (CRLF) as delivered
+db/reference/** -text
+docs/reference/** -text
