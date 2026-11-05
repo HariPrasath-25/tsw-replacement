@@ -6,6 +6,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const crypto = require('crypto');
+const Database = require('better-sqlite3');
 const { buildDatabase, versionAtLeast, splitHeaderPragmas, listModules, SCHEMA_DIR, ROOT } = require('../tools/lib/schema');
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'wsdb-')); }
@@ -51,6 +53,43 @@ test('file-creation pragmas from 00_header run on the empty file, before any DDL
   assert.equal(db.pragma('page_size', { simple: true }), 8192);
   assert.equal(db.pragma('auto_vacuum', { simple: true }), 2);
   db.close();
+});
+
+test('built file carries the 00_header settings: page_size, auto_vacuum, application_id, user_version (P2, P3, N5)', () => {
+  const file = path.join(tmpDir(), 'h.db');
+  let ranBeforeDdl = null;
+  const db = buildDatabase(file, { onPragmas: (_d, pragmas) => { ranBeforeDdl = pragmas; } });
+  try {
+    assert.deepEqual(ranBeforeDdl, ['PRAGMA page_size = 4096;', 'PRAGMA auto_vacuum = INCREMENTAL;', 'PRAGMA application_id = 1330466377;']);
+    assert.equal(db.pragma('page_size', { simple: true }), 4096);
+    assert.equal(db.pragma('auto_vacuum', { simple: true }), 2); // INCREMENTAL
+    assert.equal(db.pragma('application_id', { simple: true }), 0x4F4D4E49);
+    assert.equal(db.pragma('user_version', { simple: true }), 3);
+  } finally { db.close(); }
+});
+
+test('migration log: one row per module at user_version, checksum = sha256 of the module text (ADR-004)', () => {
+  const db = buildDatabase(':memory:', { appliedBy: 'test-build' });
+  try {
+    const rows = db.prepare('SELECT version, module, checksum, applied_by FROM schema_version ORDER BY id').all();
+    const mods = listModules(SCHEMA_DIR);
+    assert.deepEqual(rows.map((r) => r.module), mods.map((m) => m.name));
+    for (const [i, m] of mods.entries()) {
+      assert.equal(rows[i].checksum, crypto.createHash('sha256').update(m.sql, 'utf8').digest('hex'), m.name);
+      assert.equal(rows[i].version, db.pragma('user_version', { simple: true }));
+      assert.equal(rows[i].applied_by, 'test-build');
+    }
+  } finally { db.close(); }
+});
+
+test('user_version stays 0 when the build fails after the DDL ran (set last, inside the transaction)', () => {
+  const file = path.join(tmpDir(), 'fail.db');
+  assert.throws(() => buildDatabase(file, { beforeUserVersion: () => { throw new Error('late failure'); } }), /late failure/);
+  const db = new Database(file);
+  try {
+    assert.equal(db.pragma('user_version', { simple: true }), 0);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM sqlite_schema').get().n, 0); // whole build rolled back
+  } finally { db.close(); }
 });
 
 test('PRAGMA outside 00_header is refused', () => {

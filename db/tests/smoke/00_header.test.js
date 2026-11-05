@@ -1,7 +1,6 @@
 'use strict';
 const { test } = require('node:test');
-const { freshDb, insert, assertModuleCovered, T0 } = require('../helpers');
-const { hex } = require('../helpers');
+const { freshDb, insert, assertModuleCovered, hex, T0 } = require('../helpers');
 
 test('00_header: every table accepts a valid row', () => {
   const db = freshDb();
