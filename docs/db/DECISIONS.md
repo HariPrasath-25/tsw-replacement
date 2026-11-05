@@ -54,7 +54,7 @@ The linter accepts an allowlist entry only if its ADR heading exists in this fil
    | fk-index | 60 | P5 (M1–M12) |
    | time-positive | 57 | D10 (M1) |
    | naming | 19 | convention 13 (M1) |
-   | fk-name | 18 | convention 2 (M1/M7) |
+   | fk-name | 18 | convention 2, kept strict (M1/M7; see item 7) |
    | json | 15 | D9 (M1) |
    | enum-lookup | 9 | N1, G9 (M2) |
    | hash | 9 | D10 (M1); 2 standing exceptions |
@@ -65,6 +65,7 @@ The linter accepts an allowlist entry only if its ADR heading exists in this fil
 6. **Standing exceptions recorded here.** These are expected to stay allowlisted:
    - `telemetry` and `gateway_telemetry` are WITHOUT ROWID (convention 1). They're high-volume raw readings with a natural composite key `(device_id|gateway_id, telemetry_key_id, ts)`, never FK-referenced, and always read by that key prefix. That's roughly half the size of `id` plus a UNIQUE index.
    - `user_account.password_hash` and `pin_hash` hold Argon2id PHC strings (req 65), not SHA-256 hex digests, so the hash rule doesn't apply. D7/M7 adds algorithm-parameter versioning.
+7. **Foreign-key naming stays strict** (decided 2026-11-05 by the schema owner). A foreign-key column is named `<table>_id` or `<role>_<table>_id`. There's no alias for `user_account` (`user_id`) and no `*_by` shorthand. The 18 baseline columns get renamed when their milestone touches the table, for example `user_id` → `user_account_id`, `acked_by` → `acked_by_user_account_id` and `space.parent_id` → `parent_space_id`. M1 does the cross-cutting `*_by` audit columns and M7 does the identity tables. The lint rule doesn't change.
 
 **Alternatives.**
 - *Keep a single file and diff it.* Rejected: every milestone would rewrite one large file, reviews would be noisy, and smoke tests couldn't map to areas.
