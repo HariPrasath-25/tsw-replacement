@@ -158,3 +158,124 @@ The linter accepts an allowlist entry only if its ADR heading exists in this fil
 **Alternatives.** *Keep the version in the table only:* rejected. `user_version` sits in the file header and can be read without parsing the schema.
 
 **PostgreSQL portability.** There's no `user_version`; a one-row `schema_meta` table or a migration tool's table replaces it. The `application_id` check turns into a database comment or that metadata table.
+
+## ADR-005 Lookup tables for extensible domains; match_key normalisation; fixed seed ids
+
+- **Status:** Accepted
+- **Date:** 2026-11-06 · **Milestone:** M2 · **Closes:** N1, N6 · **Requirements:** 6, 41, T14
+
+**Context.** Draft v2 repeated `system IN ('fire','bms','energy','access','cctv','other')` in four tables: `controller`, `device_category`, `alarm_class` and `command_type`. SCHEMA_REVIEW N1 says six, but Draft v2 and v3 have four. It also kept `vendor` as free text in `controller`, `vendor_type_map` and `vendor_key_map`, and `protocol` as free text in `controller`. Adding a system or protocol meant a schema change, and vendor spelling drifted. Reference names were English only (N6, T14).
+
+**Decision.**
+- **Lookup tables.** New tables `system`, `vendor` and `protocol`, each with `id INTEGER PRIMARY KEY`, audit columns and `row_version`. The nine columns become `<lookup>_id` FKs with `ON DELETE RESTRICT`, each recorded as a rename in `db/tools/equiv.js`.
+- **Vendor matching.** `vendor.match_key` is `GENERATED ALWAYS AS (upper(trim(name))) STORED` with `ux_vendor_match_key`. The service looks vendors up by `match_key`, so `'Simplex'`, `'SIMPLEX'` and `' simplex '` are one vendor. `vendor_type_map.vendor_type` gets `CHECK (vendor_type = upper(trim(vendor_type)))`, so the documented upper-case rule is enforced.
+- **name_key.** Every user-visible reference table gets `name_key`: `system`, `protocol`, `condition`, `device_state_code`, `alarm_class`, `permission`, `role`, `device_category`, `device_type`, `command_type` and `telemetry_key`. It's `TEXT UNIQUE CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*')`, for example `alarm_class.fire`. It's nullable, and a NULL means "display the stored name as typed" (custom roles, runtime-discovered conditions). The UI resolves keys to EN/AR text. The database holds keys, not translations. `db:lint` rule `name-key` enforces the format.
+- **Fixed seed ids.** `system` 1 = fire, so `controller.system_id` and `device_category.system_id` can `DEFAULT 1`. Seeds use `INSERT … ON CONFLICT DO NOTHING`, so running them twice is a no-op (`seed.test.js`). Seeds build fresh databases. After the schema freeze, reference-data changes ship as migrations.
+- `protocol` will FK the Section 13 module catalogue in M8.
+
+**Alternatives.**
+- *Keep CHECK lists:* rejected. Convention 9 says an extensible domain needs a lookup table.
+- *`COLLATE NOCASE` instead of match_key:* rejected. It ignores surrounding spaces, and its ASCII-only folding is implicit. A visible key column is explicit and portable.
+- *A translation table instead of `name_key`:* deferred. T14 asks for externalised text, which the UI resource bundles already provide. A table can be added later if translations must be editable at runtime.
+
+**PostgreSQL portability.** Lookup tables and FKs map directly. `match_key` becomes a `GENERATED ALWAYS AS (upper(btrim(name))) STORED` column, or a unique index on `upper(btrim(name))`. `citext` is an alternative. The `GLOB` checks become `name_key ~ '^[a-z][a-z0-9._]*$'`.
+
+## ADR-006 Condition dictionary with first-sight UPSERT
+
+- **Status:** Accepted
+- **Date:** 2026-11-06 · **Milestone:** M2 · **Closes:** G9 (dictionary part; statistics access path in M5) · **Requirements:** 41, 43
+
+**Context.** `event.condition` was free text. Req 41 needs eight named conditions counted separately, and an unknown reported condition "counted under its reported name rather than discarded". Free text can't be managed or filtered cheaply (req 43).
+
+**Decision.**
+- **Table.** `condition(id, code, raw_name, match_key GENERATED upper(trim(raw_name)) UNIQUE, is_reported_unknown, name_key, audit columns)`, with `CHECK (is_reported_unknown = 1 OR (code IS NOT NULL AND name_key IS NOT NULL))`.
+- **Seed.** The eight req-41 conditions.
+- **Event column.** `event.condition` becomes `event.condition_id` (FK RESTRICT, nullable). The raw text stays in `event.raw_json`.
+- **Ingest pattern**, inside the ingest transaction, before the event INSERT:
+  ```sql
+  INSERT INTO condition (raw_name, is_reported_unknown, created_at, updated_at)
+    VALUES (:raw, 1, :now, :now) ON CONFLICT (match_key) DO NOTHING;
+  SELECT id FROM condition WHERE match_key = upper(trim(:raw));
+  ```
+  `RETURNING` yields no row on conflict, so the SELECT is needed (tested in `reference.test.js`). Conditions are never deleted, so the service may cache `match_key → id` and skip both statements on a hit.
+- **Index.** No index on `event.condition_id` yet. It's a hot table (CLAUDE.md alarm-path rule). It's deferred to M5 with the statistics access path (lint-allow entry, ADR-002).
+- **Measured cost.** This is an ad-hoc probe, because `db:bench` is a stub until M12. File DB, WAL, `synchronous=FULL`, 50,000 events in batches of 500:
+  - `condition_id` NULL: about 101–105k events/s
+  - upsert + select + FK every event: about 77–78k events/s, roughly +3 µs per event
+
+  With the in-memory cache the per-event cost drops to the FK parent lookup.
+
+**Alternatives.**
+- *Keep free text and add an index:* rejected. It's unmanaged, can't be translated, and the index is wider.
+- *Reject unknown conditions:* rejected, because req 41 says they must be counted.
+- *`DO UPDATE SET … RETURNING id`:* rejected. It writes the row on every event.
+
+**PostgreSQL portability.** `INSERT … ON CONFLICT (match_key) DO NOTHING` is identical. In PostgreSQL, a `WITH ins AS (… RETURNING id) SELECT … UNION ALL SELECT …` can do it in one round trip.
+
+## ADR-007 RBAC seed: permission domains, built-in roles and the approved matrix
+
+- **Status:** Accepted (code list and both role matrices approved in chat, 2026-11-06)
+- **Date:** 2026-11-06 · **Milestone:** M2 · **Closes:** G4 (permission-domain part; gateway-scoped assignment in M8) · **Requirements:** 6, 56, 57, 58, Section 13
+
+**Context.** Req 57 lists the granular permissions. Req 56 needs four built-in roles composed from them and editable without a code change. Section 13 says gateway permissions are separate from fire permissions, and its role split is "proposed for approval". Draft v2 had no domain and no seed.
+
+**Decision.**
+- **`permission` columns.**
+  - `domain` with `CHECK (domain IN ('fire','gateway','platform'))`. It's a closed boundary, not an extensible domain.
+  - `CHECK ((domain = 'gateway') = (code GLOB 'gateway.*'))` and a lowercase dotted `code` format.
+  - `is_central_grant_required` with `CHECK (is_central_grant_required = 0 OR domain = 'gateway')`. The milestone text calls it `requires_central_grant`. It's renamed for convention 6 (booleans are `is_/has_/can_`).
+- **22 codes:**
+  - fire: `alarm.view`, `alarm.acknowledge`, `panel.silence`, `panel.reset`, `device.disable`, `device.discover`, `plan.edit`
+  - platform: `user.manage`, `tenant.manage`, `setting.manage`, `licence.manage`, `data.export`, `analytics.operator.view`, `audit.read`
+  - gateway: `gateway.view`, `gateway.network.configure`, `gateway.service.manage`, `gateway.module.install`, `gateway.module.configure`, `gateway.module.activate`, `gateway.module.remove`, `gateway.access.approve`
+  - The central grant is required for `service.manage` and `module.*`. It's not required for `view`, for `network.configure` (which must work offline for site repair) or for `access.approve` (exercised on the Omniconn server).
+- **Built-in roles** (`is_builtin = 1`, `name_key` required). The fire roles are cumulative:
+
+  | Role | Permissions |
+  |---|---|
+  | Viewer | `alarm.view` |
+  | Operator | Viewer, plus `alarm.acknowledge`, `panel.silence`, `panel.reset`, `data.export` |
+  | Engineer | Operator, plus `device.disable`, `device.discover`, `plan.edit` |
+  | Administrator | Engineer, plus every platform permission |
+  | Gateway Viewer | `gateway.view` |
+  | Gateway Operator / Commissioning User | `gateway.view` |
+  | Omniconn Gateway Administrator | `gateway.view`, `gateway.network.configure`, `gateway.service.manage`, `gateway.module.*` |
+  | Central Access / Module Approver | `gateway.access.approve` only |
+
+  No fire role holds a gateway permission, and approval is kept apart from execution.
+- **Role triggers.** `trg_role_builtin_no_delete` and `trg_role_builtin_immutable` (name, name_key, is_builtin). Built-in roles' `role_permission` rows stay editable (req 56).
+- **All four fire alarm classes** are `is_life_safety = 1` (approved), seeded with `is_builtin = 1`. `trg_alarm_class_fire_immutable` blocks changes to `system_id`, `code`, `precedence`, `is_life_safety` and `is_builtin` on fire classes, and `trg_alarm_class_builtin_no_delete` blocks deletion. `ux_alarm_class_system_id_precedence` makes precedence unique per system.
+- **Last-admin rule.** Req 56 says "never no account with user.manage". That needs user assignments, so it's enforced in M7. M2 only guarantees that the Administrator role holds `user.manage`.
+
+**Alternatives.**
+- *View-per-area codes* (`device.view`, `plan.view`, `report.view`): offered, not chosen.
+- *Reset as Engineer-only:* offered, not chosen.
+- *Bundle `network.configure` into Gateway Operator:* offered, not chosen.
+
+**PostgreSQL portability.** Tables, CHECKs and seeds map directly (`GLOB` becomes `LIKE`/`~`). The triggers become `BEFORE UPDATE/DELETE` trigger functions that `RAISE EXCEPTION`.
+
+## ADR-008 device_state_code seed list
+
+- **Status:** Proposed (table created and seeded in M2 for M4; the list needs product confirmation)
+- **Date:** 2026-11-06 · **Milestone:** M2 · **Closes:** — · **Requirements:** 1, 6, 15, 18, 19
+
+**Context.** M4 moves `device_state.primary_state` and `states_json` onto a lookup with precedence. The architecture names the alarm types (req 6), disabled devices (req 19), test (req 19) and missing devices (req 18). It gives no full state list or ordering.
+
+**Decision (proposed).** `fire` 1, `priority2` 2, `supervisory` 3, `trouble` 4 (all `is_alarm = 1`, matching req 6). Then `disabled` 5, `test` 6, `missing` 7, `unknown` 8 and `normal` 99. Precedence is UNIQUE. To confirm before M4: the non-alarm ordering, and whether `unknown` belongs here or staleness stays the `is_stale` flag.
+
+**Alternatives.** *Derive device state order from `alarm_class` only:* it can't express the non-alarm states.
+
+**PostgreSQL portability.** Direct.
+
+## ADR-009 Per-user grant of gateway.network.configure
+
+- **Status:** Proposed (not implemented)
+- **Date:** 2026-11-06 · **Milestone:** M2 · **Closes:** — · **Requirements:** 58, Section 13
+
+**Context.** The approved gateway matrix leaves `gateway.network.configure` out of Gateway Operator / Commissioning User: it is "granted per user". The schema grants permissions only through roles (`role_permission`, `user_role`). Today a site would create a custom role holding that one permission and assign it alongside Gateway Operator.
+
+**Decision (proposed).** Seed a fifth built-in add-on role, "Gateway Network Configurator" (`role.gateway_network_configurator`), holding only `gateway.network.configure`. It's assigned per user, and per gateway once M8 adds gateway scoping. Not implemented until a human chooses.
+
+**Alternatives.** *Direct user grants (`user_permission`):* this is a second permission path, which works against req 58's single enforcement point. *A custom role per site:* this works today, with no schema change.
+
+**PostgreSQL portability.** Direct.

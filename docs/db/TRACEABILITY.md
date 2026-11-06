@@ -2,7 +2,7 @@
 
 Source: `docs/reference/architecture_roadmap_v1.2.md`. Appendix A covers requirements 1–123, Appendix B covers targets T1–T18, and Section 13 covers Gateway Management acceptance tests G01–G12. Gap IDs refer to `docs/db/SCHEMA_REVIEW.md`.
 
-**Baseline:** Draft v2 as split into `db/schema/` in M0. **M1** (2026-11-05) applied the cross-cutting conventions: ON DELETE policy (ADR-001), JSON/time/hash/UUID domain CHECKs, P8 audit columns, AUTOINCREMENT, the connection profile (ADR-003) and the migration log (ADR-004). Every CHECK added in M1 is tested in `checks.test.js`. `db/tests/traceability.test.js` fails if any ID from the architecture document is missing here.
+**Baseline:** Draft v2 as split into `db/schema/` in M0. **M1** (2026-11-05) applied the cross-cutting conventions: ON DELETE policy (ADR-001), JSON/time/hash/UUID domain CHECKs, P8 audit columns, AUTOINCREMENT, the connection profile (ADR-003) and the migration log (ADR-004). Every CHECK added in M1 is tested in `checks.test.js`. **M2** (2026-11-06) replaced the system/vendor/protocol/condition domains with lookup tables (ADR-005, ADR-006), added `name_key` (T14) and seeded alarm classes, conditions, device state codes, permissions and roles (ADR-007); seeds are idempotent (`seed.test.js`). `db/tests/traceability.test.js` fails if any ID from the architecture document is missing here.
 
 **Columns.** *DB relevant?* is Y when the database stores, constrains or serves the requirement. N rows are owned by the service, UI, installer or process, and later milestones don't track them here. *Objects* are tables and columns. *Constraint/trigger* lists only the existing enforcement, not the planned enforcement. *Test* paths are relative to `db/tests/`.
 
@@ -24,8 +24,8 @@ Every milestone updates the rows it touches: objects, constraints, tests and sta
 | 3 Staleness indication | P1 | Y | device_state.is_stale, last_seen_at, gateway.last_heartbeat / conn_state, controller.last_contact / conn_state | conn_state CHECK lists; time > 0 CHECKs (M1) | smoke/02_sources, checks | Partial — G1 (broker) |
 | 4 Audible annunciation per session | P1 | N | — (client) | — | — | N/A |
 | 5 Active alarm list | P1 | Y | alarm, alarm_class, device (address, local_label, space_id), controller, site | ix_alarm_open, ix_alarm_site | smoke/03_events_alarms | Partial — P5, G11 |
-| 6 Alarm types | P1 | Y | alarm_class (system, code, precedence, is_life_safety) | UNIQUE (system, code) | smoke/03_events_alarms | Partial — N1, N6 (no seed data yet, M2) |
-| 7 Type distinction | P1 | N | — (UI colour and symbol) | — | — | N/A |
+| 6 Alarm types | P1 | Y | alarm_class (system_id, code, name_key, precedence, is_life_safety, is_builtin); seed 02_alarm (Fire 1, Priority 2 2, Supervisory 3, Trouble 4); system lookup | UNIQUE (system_id, code); ux_alarm_class_system_id_precedence; trg_alarm_class_fire_immutable; trg_alarm_class_builtin_no_delete (M2, ADR-007) | seed, reference, triggers, checks | Covered (M2) |
+| 7 Type distinction | P1 | Y | alarm_class.code / name_key: one stable key per type that the UI maps to its colour and non-colour indicator (colour and symbol themselves are UI) | UNIQUE (system_id, code), UNIQUE name_key, fire identity immutable (M2) | seed, triggers | Covered (M2) — colour/indicator owned by the UI |
 | 8 Acknowledge (individual / group) | P1 | Y | alarm.acked_by_user_account_id, acked_at, state | state CHECK; acked_at > 0; FK RESTRICT (M1) | smoke/03_events_alarms, checks | Gap — G10, D3 |
 | 9 Silence | P1 | Y | command_type (silence, permission_id), command, audit_log | command.status CHECK | smoke/05_commands | Partial — D4 |
 | 10 Reset | P1 | Y | command_type.pin_policy, command.is_pin_verified | pin_policy CHECK | smoke/05_commands | Partial — D4 |
@@ -39,7 +39,7 @@ Every milestone updates the rows it touches: objects, constraints, tests and sta
 | 18 Device discovery review | P2 | Y | device.discovery_state | discovery_state CHECK | smoke/02_sources | Gap — G6 |
 | 19 Device control | P1 | Y | device_type.can_disable / can_test, device_state.is_disabled, command_type (target = device), command | is_disabled CHECK | smoke/05_commands | Partial — D4 |
 | 20 Local labels and spaces | P1 | Y | device.local_label vs source_label, device.space_id (SET NULL), updated_at / updated_by_user_account_id / row_version | P8 columns (M1) | smoke/02_sources, checks | Partial — D6 |
-| 21 Fire network view | P2 | Y | controller (conn_state, last_contact, gateway_id), gateway | UNIQUE (gateway_id, protocol, ref) | smoke/02_sources | Partial — P5 |
+| 21 Fire network view | P2 | Y | controller (conn_state, last_contact, gateway_id, protocol_id), gateway | UNIQUE (gateway_id, protocol_id, ref) | smoke/02_sources | Partial — P5 |
 | 22 Network alarms as Trouble | P1 | Y | alarm, event | — | — | Gap — G1 |
 | 23 Gateway health | P2 | Y | gateway, gateway_hardware, gateway_health, gateway_telemetry, controller.conn_state | ux_gateway_hardware_current | smoke/02_sources, smoke/08_integrity | Partial — D12, G5 |
 | 24 Source loss alarm (gateway, panel, broker) | P1 | Y | — | — | — | Gap — G1, G2 |
@@ -59,9 +59,9 @@ Every milestone updates the rows it touches: objects, constraints, tests and sta
 | 38 Geographic view | P3 | Y | site (no position) | — | — | Gap — not in SCHEMA_REVIEW (site location); to propose in M3 |
 | 39 Plan replacement (recoverable) | P3 | Y | floor_plan.is_current, plan_placement.status | status CHECK; plan_placement.floor_plan_id RESTRICT (was CASCADE, ADR-001) | smoke/01_tenancy | Gap — G7 |
 | 40 Mapping import | P2 | N | — (service validates, then writes device.space_id through the normal path) | — | — | N/A |
-| 41 Condition statistics | P2 | Y | event.condition (free text) | — | — | Gap — G9 |
+| 41 Condition statistics | P2 | Y | condition (code, raw_name, match_key, is_reported_unknown, name_key) seeded with the 8 conditions; event.condition_id; first-sight UPSERT (ADR-006) | ux_condition_match_key; known-condition CHECK; FK RESTRICT (M2) | seed, reference, checks | Partial — P5 (event.condition_id index and statistics roll-up, M5) |
 | 42 Drill-through | P3 | Y | event, alarm, device, plan_placement | — | — | Partial — P5, G9 |
-| 43 Filtering (incl. tenant) | P2 | Y | event, alarm, device, space | — | — | Partial — G11, P5, G9 |
+| 43 Filtering (incl. tenant) | P2 | Y | event, alarm, device, space, condition (filter values), alarm_class | — | reference | Partial — G11, P5 |
 | 44 Bulk export | P2 | Y | — | — | — | Gap — G8 |
 | 45 Individual alarm report | P2 | Y | alarm, event, command, plan_placement | — | — | Gap — G8, G10 |
 | 46 Export provenance | P2 | Y | — | — | — | Gap — G8 |
@@ -74,8 +74,8 @@ Every milestone updates the rows it touches: objects, constraints, tests and sta
 | 53 Response analytics | P4 | Y | alarm.raised_at, acked_at, acked_by_user_account_id | — | — | Partial — G10, P7 (M10 views) |
 | 54 Tenant management | P1 | Y | tenant.status, site | status CHECK, UNIQUE (tenant_id, name) | smoke/01_tenancy | Partial — P8, G11 |
 | 55 Tenant isolation | P1 | Y | event, audit_log, quarantine, command (no tenant/site column) | — | — | Gap — G11 |
-| 56 Roles; never zero manage-users holders | P1 | Y | role, permission, role_permission, user_role | UNIQUE (role_id, permission_id) | smoke/06_identity | Gap — G12 |
-| 57 Granular permissions | P1 | Y | permission (code) | UNIQUE (code) | smoke/06_identity | Partial — G4 (domain), N1 (no seed yet, M2) |
+| 56 Roles; never zero manage-users holders | P1 | Y | role (is_builtin, name_key), role_permission; seed 03_rbac: Administrator, Engineer, Operator, Viewer (ADR-007) | UNIQUE (role_id, permission_id); trg_role_builtin_no_delete; trg_role_builtin_immutable; built-in name_key CHECK (M2) | seed, reference, triggers, smoke/06_identity | Partial — G12 (last-admin rule, M7) |
+| 57 Granular permissions | P1 | Y | permission (code, domain, name_key, is_central_grant_required); seed 03_rbac: 14 fire/platform codes, one per req 57 action (ADR-007) | UNIQUE (code); code format, domain, gateway-prefix and central-grant CHECKs (M2) | seed, checks | Covered (M2) |
 | 58 Single enforcement point | P1 | N | — (service) | — | — | N/A |
 | 59 User scoping | P1 | Y | user_role (tenant_id, site_id, space_id) | ux_user_role_scope, trg_user_role_scope, trg_user_role_scope_upd | triggers (trg_user_role_scope*), smoke/06_identity | Partial — D6 |
 | 60 Authentication (Windows / AD / local) | P1 | Y | user_account (auth_type, windows_sid, password_hash) | auth_type CHECK, local requires password_hash | smoke/06_identity | Partial — D7 |
@@ -119,7 +119,7 @@ Every milestone updates the rows it touches: objects, constraints, tests and sta
 | 98 Encryption at rest | P1 | Y | licence.licence_key_enc (DPAPI); secret columns listed in DATA_DICTIONARY.md | — | smoke/10_licence | Partial — G18 |
 | 99 Alarm path isolation | P1 | Y | event (minimal indexes), reader profile query_only=ON, wal_autocheckpoint=0 (checkpoint off the ingest path) | FK indexes on hot tables deferred with benchmark (ADR-002) | helpers.test.js (assertNoScan), connection.test.js | Partial — P6 (M12 bench, T1) |
 | 100 Component licensing | P1 | N | — | — | — | N/A |
-| 101 Extensibility (new source type) | P2 | Y | controller.protocol (free text), vendor_type_map, vendor_key_map | — | smoke/02_sources | Partial — N1 |
+| 101 Extensibility (new source type) | P2 | Y | system, protocol, vendor lookups (M2); controller.system_id / protocol_id / vendor_id; vendor_type_map, vendor_key_map (vendor_id) | FK RESTRICT; ux_vendor_match_key; vendor_type upper-case CHECK (M2) | reference, smoke/02_sources | Partial — G3 (protocol → module catalogue, M8) |
 | 102 Diagnostics / technical log | P2 | Y | retention_policy ('technical_log') | — | — | Gap — G19 |
 | 103 Fault containment | P1 | N | — (service) | — | — | N/A |
 | 104 Security hardening | P1 | N | — (no plaintext secrets: convention 15) | — | — | N/A |
@@ -160,7 +160,7 @@ Every milestone updates the rows it touches: objects, constraints, tests and sta
 | T11 Continuous operation 90 days | Target | Y | WAL / checkpoint policy | — | — | Gap — P1 (checkpoint policy) |
 | T12 Source loss shown within 15 s | Target | Y | — | — | — | Gap — G1 |
 | T13 Accessibility | Target | N | — | — | — | N/A |
-| T14 Localisation (English / Arabic) | Target | Y | reference-data names; device labels | — | — | Gap — N6, P9, G17 |
+| T14 Localisation (English / Arabic) | Target | Y | name_key on system, protocol, condition, device_state_code, alarm_class, permission, role, device_category, device_type, command_type, telemetry_key (M2, ADR-005); device labels | name_key format CHECK + UNIQUE; db:lint rule name-key (M2) | checks, lint | Partial — P9, G17 |
 | T15 Coverage | Target | N | — (code coverage; DB triggers have negative tests, convention 12) | — | triggers.test.js | N/A |
 | T16 Minimum host (256 GB SSD) | Target | Y | storage size per event | — | — | Not measured — M12 (P6) |
 | T17 Desktop client | Target | N | — | — | — | N/A |
@@ -171,12 +171,12 @@ Every milestone updates the rows it touches: objects, constraints, tests and sta
 | Req | Priority | DB relevant? | Objects | Constraint/trigger | Test | Status |
 |---|---|---|---|---|---|---|
 | G01 Gateway identity, resources, services, modules, freshness | GMA | Y | gateway, gateway_hardware, gateway_health (no modules or services) | — | smoke/02_sources | Gap — G3 |
-| G02 Viewer read-only; scoped network changes | GMA | Y | permission, user_role (no gateway scope) | — | — | Gap — G4 |
+| G02 Viewer read-only; scoped network changes | GMA | Y | permission (domain = gateway: gateway.view, gateway.network.configure); Gateway Viewer / Gateway Operator roles (M2, ADR-007); user_role (no gateway scope yet) | domain / gateway-prefix CHECKs (M2) | seed | Partial — G4 (gateway-scoped assignment, M8), ADR-009 |
 | G03 Network change validation + timed confirm/rollback | GMA | Y | — | — | — | Gap — G3 |
 | G04 Allowlisted service / OS operations only | GMA | Y | — | — | — | Gap — G3 |
 | G05 Central single-use elevation (no replay, no reboot reuse) | GMA | Y | — | — | — | Gap — G3 |
 | G06 Central outage / revocation / clock-fault policy | GMA | Y | — | — | — | Gap — G3 |
-| G07 Module install/update/remove by authorised admin only | GMA | Y | — | — | — | Gap — G3, G4 |
+| G07 Module install/update/remove by authorised admin only | GMA | Y | permission gateway.module.install / .configure / .activate / .remove (is_central_grant_required = 1); Omniconn Gateway Administrator role (M2) | central-grant CHECK (M2) | seed, checks | Gap — G3 (module catalogue, grants, M8) |
 | G08 Reject bad packages; recover at every lifecycle stage | GMA | Y | — | — | — | Gap — G3 |
 | G09 Gateway audit sync without loss or duplication | GMA | Y | audit_log (no gateway origin or sync key) | — | — | Gap — G3, G11 |
 | G10 Resource limits preserve alarm path | GMA | Y | — | — | — | Not measured — M12 |
