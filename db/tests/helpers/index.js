@@ -72,7 +72,8 @@ function insert(db, table, row) {
 
 /**
  * Minimal valid graph: tenant > site > building > floor; gateway (+ current hardware) >
- * controller > device; device categories/types (id 0 = unknown); one admin user, role, permission.
+ * controller > device; device categories/types (id 0 = unknown); one admin user; ids of the seeded
+ * Administrator role, panel.silence permission, fire system, Simplex protocol/vendor and fire/trouble classes.
  * Returns the ids.
  */
 function insertFixtures(db) {
@@ -86,12 +87,19 @@ function insertFixtures(db) {
     username: 'admin', display_name: 'Fixture Admin', auth_type: 'local',
     password_hash: '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA', created_at: T0,
   });
-  f.roleId = insert(db, 'role', { name: 'Administrator', is_builtin: 1 });
-  f.permissionId = insert(db, 'permission', { code: 'panel.silence', description: 'Silence a fire panel' });
+  // Seeded reference data (db/seed, M2): look ids up by natural key, never re-insert them.
+  const idOf = (table, col, value) => db.prepare(`SELECT id FROM ${table} WHERE ${col} = ?`).get(value).id;
+  f.roleId = idOf('role', 'name', 'Administrator');
+  f.permissionId = idOf('permission', 'code', 'panel.silence');
+  f.fireSystemId = idOf('system', 'code', 'fire');
+  f.simplexProtocolId = idOf('protocol', 'code', 'simplex');
+  f.simplexVendorId = idOf('vendor', 'match_key', 'SIMPLEX');
+  f.fireClassId = idOf('alarm_class', 'name_key', 'alarm_class.fire');
+  f.troubleClassId = idOf('alarm_class', 'name_key', 'alarm_class.trouble');
 
   f.gatewayId = insert(db, 'gateway', { site_id: f.siteId, space_id: f.floorId, name: 'GW-1', created_at: T0 });
   f.gatewayHardwareId = insert(db, 'gateway_hardware', { gateway_id: f.gatewayId, serial: 'GW1B2511004', installed_at: T0 });
-  f.controllerId = insert(db, 'controller', { gateway_id: f.gatewayId, space_id: f.floorId, protocol: 'simplex', ref: '1', name: 'FACP 1', vendor: 'Simplex' });
+  f.controllerId = insert(db, 'controller', { gateway_id: f.gatewayId, space_id: f.floorId, protocol_id: f.simplexProtocolId, ref: '1', name: 'FACP 1', vendor_id: f.simplexVendorId });
 
   f.unknownCategoryId = insert(db, 'device_category', { code: 'unknown', name: 'Unknown', is_physical: 0 });
   f.detectorCategoryId = insert(db, 'device_category', { code: 'detector', name: 'Detector' });

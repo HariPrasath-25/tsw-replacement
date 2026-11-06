@@ -11,8 +11,8 @@ function setup() {
   f.otherTenantId = insert(db, 'tenant', { name: 'Other Tenant', created_at: T0 });
   f.otherSiteId = insert(db, 'site', { tenant_id: f.otherTenantId, name: 'Other Site', timezone: 'Asia/Dubai', created_at: T0 });
   f.otherSpaceId = insert(db, 'space', { site_id: f.otherSiteId, type: 'building', name: 'Other Building' });
-  f.syncId = insert(db, 'command_type', { system: 'fire', code: 'sync_clock', name: 'Sync clock', target: 'controller', permission_id: f.permissionId, can_schedule: 1 });
-  f.silenceId = insert(db, 'command_type', { system: 'fire', code: 'silence', name: 'Silence', target: 'controller', permission_id: f.permissionId });
+  f.syncId = insert(db, 'command_type', { system_id: f.fireSystemId, code: 'sync_clock', name: 'Sync clock', target: 'controller', permission_id: f.permissionId, can_schedule: 1 });
+  f.silenceId = insert(db, 'command_type', { system_id: f.fireSystemId, code: 'silence', name: 'Silence', target: 'controller', permission_id: f.permissionId });
   return { db, f };
 }
 
@@ -22,6 +22,26 @@ const schedule = (f, commandTypeId) => ({
 });
 
 const TESTED = {
+  // M2 (req 6): fire class identity and order are fixed; every forbidden column is tried separately.
+  trg_alarm_class_fire_immutable({ db, f }) {
+    const msg = 'alarm_class: fire class code/precedence/is_life_safety are fixed';
+    for (const set of ['precedence = 9', `code = 'blaze'`, 'is_life_safety = 0', 'is_builtin = 0', 'system_id = 2']) {
+      expectAbort(db, `UPDATE alarm_class SET ${set} WHERE id = ?`, msg, [f.fireClassId]);
+    }
+    // Swapping two precedences in one statement is also refused (UNIQUE would allow a careful swap).
+    expectAbort(db, 'UPDATE alarm_class SET precedence = 5 - precedence WHERE id IN (?, ?)', msg, [f.fireClassId, f.troubleClassId]);
+  },
+  trg_alarm_class_builtin_no_delete({ db, f }) {
+    expectAbort(db, 'DELETE FROM alarm_class WHERE id = ?', 'alarm_class: built-in class cannot be deleted', [f.troubleClassId]);
+  },
+  trg_role_builtin_no_delete({ db, f }) {
+    expectAbort(db, 'DELETE FROM role WHERE id = ?', 'role: built-in role cannot be deleted', [f.roleId]);
+  },
+  trg_role_builtin_immutable({ db, f }) {
+    for (const set of [`name = 'Admin'`, `name_key = 'role.admin'`, 'is_builtin = 0']) {
+      expectAbort(db, `UPDATE role SET ${set} WHERE id = ?`, 'role: built-in role identity is fixed', [f.roleId]);
+    }
+  },
   trg_command_schedule_allowed({ db, f }) {
     insert(db, 'command_schedule', schedule(f, f.syncId)); // allowed type: OK
     expectAbort(db, `INSERT INTO command_schedule (name, command_type_id, site_id, controller_id, interval_sec, created_by_user_account_id, created_at, updated_at)

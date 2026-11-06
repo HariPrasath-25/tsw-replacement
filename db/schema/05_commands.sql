@@ -1,4 +1,4 @@
--- Module 05: commands — command types, schedules, schedule runs, the command log (M1: P4, D9, D10, D11, P8)
+-- Module 05: commands — command types, schedules, schedule runs, the command log (M1: P4, D9, D10, D11, P8; M2: N1, N6)
 
 -- ---------------------------------------------------------------------
 -- 4. Commands to controllers and devices (silence, reset, disable, later setpoints...)
@@ -6,10 +6,11 @@
 -- The same safety rules (confirm, expiry, never retry, audit) apply to every command type (req 9-12, 63).
 CREATE TABLE command_type (
     id               INTEGER PRIMARY KEY,
-    system           TEXT    NOT NULL
-                     CHECK (system IN ('fire','bms','energy','access','cctv','other')),
+    system_id        INTEGER NOT NULL REFERENCES system(id) ON DELETE RESTRICT,  -- N1 (was a CHECK list)
     code             TEXT    NOT NULL,                 -- silence, reset, disable_device, write_setpoint...
     name             TEXT    NOT NULL,
+    name_key         TEXT    UNIQUE                    -- N6, T14
+                     CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*'),
     target           TEXT    NOT NULL CHECK (target IN ('controller','device')),
     permission_id    INTEGER NOT NULL REFERENCES permission(id) ON DELETE RESTRICT,
     pin_policy       TEXT    NOT NULL DEFAULT 'never'
@@ -22,7 +23,7 @@ CREATE TABLE command_type (
     updated_at       INTEGER NOT NULL CHECK (updated_at > 0),
     updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
     row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1),
-    UNIQUE (system, code),
+    UNIQUE (system_id, code),                          -- leading system_id also serves the FK
     CHECK (can_schedule = 0 OR pin_policy = 'never')   -- a schedule cannot type a PIN
 ) STRICT;
 CREATE INDEX ix_command_type_permission_id ON command_type(permission_id);

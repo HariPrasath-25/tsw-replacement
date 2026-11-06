@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// npm run db:lint — schema linter for CLAUDE.md conventions 1-9 and 13.
+// npm run db:lint — schema linter for CLAUDE.md conventions 1-9 and 13, plus name_key format (N6, ADR-005).
 // Builds a fresh in-memory DB from db/schema, inspects sqlite_schema + pragmas + the CREATE text,
 // and compares the violations with db/tools/lint-allow.json:
 //   * a violation not in the allowlist  -> FAIL (new debt)
@@ -113,6 +113,12 @@ function lintDb(db) {
 
       // 9. Extensible domains
       if (LOOKUP_DOMAINS.includes(c) && col.type === 'TEXT') add('enum-lookup', obj, `${c} is an extensible domain: use a lookup table + ${c}_id FK`);
+
+      // N6 / T14: externalised text keys are lowercase dotted keys ('alarm_class.fire')
+      if (c === 'name_key') {
+        const ok = col.type === 'TEXT' && hasCheck(/\bname_key\s+GLOB\s+'\[a-z\]\*'/i) && hasCheck(/\bname_key\s+NOT\s+GLOB\s+'\*\[\^a-z0-9\._\]\*'/i);
+        if (!ok) add('name-key', obj, "name_key must be TEXT CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*')");
+      }
     }
 
     // 13. Table naming

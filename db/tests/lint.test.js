@@ -41,7 +41,8 @@ test('rules fire on a table that breaks every convention', () => {
       meta_json TEXT,
       file_sha256 TEXT,
       run_uuid TEXT,
-      vendor TEXT
+      vendor TEXT,
+      name_key TEXT
     );
     CREATE INDEX widgets_owner ON Widgets(owner);
     CREATE TABLE gadget (id INTEGER PRIMARY KEY, created_at INTEGER NOT NULL CHECK (created_at > 0)) STRICT;
@@ -54,7 +55,7 @@ test('rules fire on a table that breaks every convention', () => {
     'fk-name:Widgets.owner', 'fk-on-delete:Widgets.owner', 'fk-index:Widgets.tenant_id',
     'time-positive:Widgets.created_at', 'time-type:Widgets.seen_time',
     'bool:Widgets.is_ok', 'bool-name:Widgets.active', 'json:Widgets.meta_json',
-    'hash:Widgets.file_sha256', 'uuid:Widgets.run_uuid', 'enum-lookup:Widgets.vendor',
+    'hash:Widgets.file_sha256', 'uuid:Widgets.run_uuid', 'enum-lookup:Widgets.vendor', 'name-key:Widgets.name_key',
     'naming:index widgets_owner', 'naming:trigger gadget_guard',
   ]) assert.ok(keys.has(k), `expected violation ${k}`);
   // Conforming parts are not reported.

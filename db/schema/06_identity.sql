@@ -1,4 +1,4 @@
--- Module 06: identity — users, roles, permissions, scope, sessions (M1: D9, D10, D11, P8, P5)
+-- Module 06: identity — users, roles, permissions, scope, sessions (M1: D9, D10, D11, P8, P5; M2: G4, N6)
 
 -- ---------------------------------------------------------------------
 -- 5. Users, roles, permissions, scope and sessions
@@ -25,26 +25,54 @@ CREATE TABLE user_account (
     CHECK (auth_type = 'windows' OR password_hash IS NOT NULL)
 ) STRICT;
 
--- Roles (req 56, 57).
+-- Roles (req 56, 57; Section 13). Seeded by db/seed/03_rbac.sql: the four fire roles (Administrator,
+-- Engineer, Operator, Viewer) and the four Gateway Management roles, all is_builtin = 1 (ADR-007).
+-- Built-in roles cannot be deleted or renamed; their permission sets stay editable (req 56:
+-- "existing ones amended without a code change"). Custom roles: is_builtin = 0, name_key NULL.
 CREATE TABLE role (
     id               INTEGER PRIMARY KEY,
-    name             TEXT    NOT NULL UNIQUE,          -- Viewer, Operator, Engineer, Administrator
+    name             TEXT    NOT NULL UNIQUE,          -- Viewer, Operator, Engineer, Administrator, Gateway Viewer...
+    name_key         TEXT    UNIQUE                    -- N6, T14; NULL for custom roles (display name as typed)
+                     CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*'),
     is_builtin       INTEGER NOT NULL DEFAULT 0 CHECK (is_builtin IN (0,1)),
     created_at       INTEGER NOT NULL CHECK (created_at > 0),
     updated_at       INTEGER NOT NULL CHECK (updated_at > 0),
     updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
-    row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1)
+    row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1),
+    CHECK (is_builtin = 0 OR name_key IS NOT NULL)     -- built-in role names are translated (T14)
 ) STRICT;
 
--- Permissions (req 57).
+CREATE TRIGGER trg_role_builtin_no_delete
+BEFORE DELETE ON role
+WHEN OLD.is_builtin = 1
+BEGIN SELECT RAISE(ABORT, 'role: built-in role cannot be deleted (req 56)'); END;
+
+CREATE TRIGGER trg_role_builtin_immutable
+BEFORE UPDATE OF name, name_key, is_builtin ON role
+WHEN OLD.is_builtin = 1
+ AND (NEW.name IS NOT OLD.name OR NEW.name_key IS NOT OLD.name_key OR NEW.is_builtin IS NOT OLD.is_builtin)
+BEGIN SELECT RAISE(ABORT, 'role: built-in role identity is fixed (req 56)'); END;
+
+-- Permissions (req 57; Section 13, G4). One code per protected action. domain separates fire-panel,
+-- platform-administration and Gateway Management permissions: a fire administrator does not
+-- become a gateway administrator (Section 13). The service checks codes at its single enforcement
+-- point (req 58). is_central_grant_required = 1: the action also needs a valid, scoped, single-use
+-- central grant (Section 13 one-time access; grants are modelled in M8).
 CREATE TABLE permission (
     id               INTEGER PRIMARY KEY,
-    code             TEXT    NOT NULL UNIQUE,          -- e.g. alarm.ack, panel.silence, panel.reset,View Floor Plan
+    code             TEXT    NOT NULL UNIQUE           -- e.g. alarm.acknowledge, panel.silence, gateway.module.install
+                     CHECK (code GLOB '[a-z]*' AND code NOT GLOB '*[^a-z0-9._]*'),
+    domain           TEXT    NOT NULL CHECK (domain IN ('fire','gateway','platform')),  -- G4
     description      TEXT    NOT NULL,
+    name_key         TEXT    UNIQUE                    -- N6, T14
+                     CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*'),
+    is_central_grant_required INTEGER NOT NULL DEFAULT 0 CHECK (is_central_grant_required IN (0,1)),  -- Section 13, M8 (milestone text: requires_central_grant; renamed for convention 6)
     created_at       INTEGER NOT NULL CHECK (created_at > 0),
     updated_at       INTEGER NOT NULL CHECK (updated_at > 0),
     updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
-    row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1)
+    row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1),
+    CHECK ((domain = 'gateway') = (code GLOB 'gateway.*')),       -- gateway codes live only in the gateway domain
+    CHECK (is_central_grant_required = 0 OR domain = 'gateway')      -- central grants apply to gateway actions only
 ) STRICT;
 
 -- Role -> permission link. Pure child of role: CASCADE; a permission in use cannot be deleted.

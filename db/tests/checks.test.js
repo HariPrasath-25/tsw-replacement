@@ -18,10 +18,11 @@ const UUID = '00000000-0000-4000-8000-0000000000aa';
 function setup() {
   const db = freshDb();
   const f = insertFixtures(db);
-  f.alarmClassId = insert(db, 'alarm_class', { system: 'fire', code: 'fire', name: 'Fire', precedence: 1, is_life_safety: 1 });
+  f.alarmClassId = f.fireClassId; // seeded
+  f.bmsSystemId = db.prepare(`SELECT id FROM system WHERE code = 'bms'`).get().id;
   f.eventId = insert(db, 'event', { gateway_id: f.gatewayId, gateway_hardware_id: f.gatewayHardwareId, source_event_id: 'e1', event_type: 'alarm', alarm_class_id: f.alarmClassId, rcv_time: T0, raw_json: '{}' });
   f.keyId = insert(db, 'telemetry_key', { code: 'sensitivity', name: 'Sensitivity', value_kind: 'numeric', storage_mode: 'on_change' });
-  f.schedTypeId = insert(db, 'command_type', { system: 'fire', code: 'sync_clock', name: 'Sync', target: 'controller', permission_id: f.permissionId, can_schedule: 1 });
+  f.schedTypeId = insert(db, 'command_type', { system_id: f.fireSystemId, code: 'sync_clock', name: 'Sync', target: 'controller', permission_id: f.permissionId, can_schedule: 1 });
   f.scheduleId = insert(db, 'command_schedule', { name: 'S', command_type_id: f.schedTypeId, site_id: f.siteId, controller_id: f.controllerId, interval_sec: 3600, created_by_user_account_id: f.userId });
   f.floorPlanId = insert(db, 'floor_plan', { space_id: f.floorId, file_name: 'a.png', mime_type: 'image/png', width_px: 10, height_px: 10, size_bytes: 10, sha256: hex(64), storage_path: 'a', uploaded_at: T0 });
   return { db, f };
@@ -35,26 +36,31 @@ const VALID = {
   space: (f) => ({ site_id: f.siteId, parent_id: f.floorId, type: 'zone', name: 'Z' }),
   floor_plan: (f) => ({ space_id: f.floorId, file_name: 'b.png', mime_type: 'image/png', width_px: 10, height_px: 10, size_bytes: 10, sha256: hex(64, 'b'), storage_path: 'b', uploaded_at: T0 }),
   plan_placement: (f) => ({ floor_plan_id: f.floorPlanId, device_id: f.deviceId, x: 0.5, y: 0.5, rotation_deg: 90, placed_at: T0 }),
+  system: () => ({ code: 's2', name: 'S2', name_key: 'system.s2' }),
+  vendor: () => ({ name: 'Notifier' }),
+  protocol: () => ({ code: 'p2', name: 'P2', name_key: 'protocol.p2' }),
+  device_state_code: () => ({ code: 'x2', precedence: 50, is_alarm: 0, name_key: 'device_state.x2' }),
+  condition: () => ({ code: 'c2', raw_name: 'C2', is_reported_unknown: 0, name_key: 'condition.c2' }),
   gateway: (f) => ({ site_id: f.siteId, name: 'GW-2', last_heartbeat: T0 }),
   gateway_hardware: (f) => ({ gateway_id: f.gatewayId, serial: 'SER-2', installed_at: T0, removed_at: T0 + 1 }),
-  controller: (f) => ({ gateway_id: f.gatewayId, protocol: 'simplex', ref: '2', name: 'FACP 2', last_contact: T0 }),
-  device_category: () => ({ code: 'c2', name: 'C2' }),
-  device_type: (f) => ({ code: 't2', device_category_id: f.detectorCategoryId, name: 'T2' }),
-  vendor_type_map: (f) => ({ vendor: 'Simplex', vendor_type: 'HEAT', device_type_id: f.deviceTypeId }),
+  controller: (f) => ({ gateway_id: f.gatewayId, protocol_id: f.simplexProtocolId, ref: '2', name: 'FACP 2', last_contact: T0 }),
+  device_category: () => ({ code: 'c2', name: 'C2', name_key: 'device_category.c2' }),
+  device_type: (f) => ({ code: 't2', device_category_id: f.detectorCategoryId, name: 'T2', name_key: 'device_type.t2' }),
+  vendor_type_map: (f) => ({ vendor_id: f.simplexVendorId, vendor_type: 'HEAT', device_type_id: f.deviceTypeId }),
   device: (f) => ({ controller_id: f.controllerId, address: 'L1-M2' }),
   device_hardware: (f) => ({ device_id: f.deviceId, controller_id: f.controllerId, address: 'L1-M1', installed_at: T0, removed_at: T0 + 1 }),
   device_state: (f) => ({ device_id: f.deviceId, analog_json: '{}', updated_src_time: T0, updated_rcv_time: T0, last_seen_at: T0 }),
   device_state_history: (f) => ({ device_id: f.deviceId, old_states_json: '["normal"]', new_states_json: '["trouble"]', new_primary_state: 'trouble', src_time: T0, rcv_time: T0 }),
-  alarm_class: () => ({ system: 'fire', code: 'trouble', name: 'Trouble', precedence: 4 }),
+  alarm_class: (f) => ({ system_id: f.bmsSystemId, code: 'high_temp', name: 'High temperature', name_key: 'alarm_class.bms.high_temp', precedence: 1 }),
   event: (f) => ({ gateway_id: f.gatewayId, gateway_hardware_id: f.gatewayHardwareId, source_event_id: 'v1', event_type: 'status', src_time: T0, rcv_time: T0, raw_json: '{}' }),
   alarm: (f) => ({ raised_event_id: f.eventId, site_id: f.siteId, alarm_class_id: f.alarmClassId, precedence: 1, raised_at: T0, acked_at: T0, cleared_at: T0 }),
-  telemetry_key: () => ({ code: 'k2', name: 'K2', value_kind: 'numeric', storage_mode: 'interval', interval_sec: 60, decimals: 2, raw_keep_days: 10, rollup_keep_days: 10 }),
+  telemetry_key: () => ({ code: 'k2', name: 'K2', name_key: 'telemetry_key.k2', value_kind: 'numeric', storage_mode: 'interval', interval_sec: 60, decimals: 2, raw_keep_days: 10, rollup_keep_days: 10 }),
   device_type_telemetry: (f) => ({ device_type_id: f.deviceTypeId, telemetry_key_id: f.keyId, interval_sec: 60 }),
-  vendor_key_map: (f) => ({ vendor: 'Simplex', raw_key: 'r', telemetry_key_id: f.keyId, enum_map_json: '{}' }),
+  vendor_key_map: (f) => ({ vendor_id: f.simplexVendorId, raw_key: 'r', telemetry_key_id: f.keyId, enum_map_json: '{}' }),
   telemetry: (f) => ({ device_id: f.deviceId, telemetry_key_id: f.keyId, ts: T0, value: 1 }),
   gateway_telemetry: (f) => ({ gateway_id: f.gatewayId, telemetry_key_id: f.keyId, ts: T0, value: 1 }),
   telemetry_rollup: (f) => ({ source_kind: 'device', source_id: f.deviceId, telemetry_key_id: f.keyId, period: 'hour', period_ts: T0, samples: 1 }),
-  command_type: (f) => ({ system: 'fire', code: 'c3', name: 'C3', target: 'device', permission_id: f.permissionId, expiry_sec: 30 }),
+  command_type: (f) => ({ system_id: f.fireSystemId, code: 'c3', name: 'C3', name_key: 'command_type.c3', target: 'device', permission_id: f.permissionId, expiry_sec: 30 }),
   command_schedule: (f) => ({
     name: 'S2', command_type_id: f.schedTypeId, site_id: f.siteId, controller_id: f.controllerId, interval_sec: 3600,
     window_start: '01:00', window_end: '05:00', last_run_at: T0, next_run_at: T0, params_json: '{}', created_by_user_account_id: f.userId,
@@ -65,8 +71,8 @@ const VALID = {
     requested_at: T0, expires_at: T0 + 1, completed_at: T0 + 1, raw_json: '{}',
   }),
   user_account: () => ({ username: 'u2', display_name: 'U2', auth_type: 'windows', locked_until: T0 }),
-  role: () => ({ name: 'R2' }),
-  permission: () => ({ code: 'p2', description: 'P2' }),
+  role: () => ({ name: 'R2', name_key: 'role.r2', is_builtin: 1 }),
+  permission: () => ({ code: 'gateway.p2', domain: 'gateway', description: 'P2', name_key: 'permission.p2', is_central_grant_required: 1 }),
   user_role: (f) => ({ user_id: f.userId, role_id: f.roleId, tenant_id: f.tenantId, granted_at: T0 }),
   directory_group_role: (f) => ({ group_sid: 'S-1-5-21-9', role_id: f.roleId, tenant_id: f.tenantId }),
   session: (f) => ({ user_id: f.userId, token_hash: hex(64), client_kind: 'web', started_at: T0, last_activity: T0, ended_at: T0, end_reason: 'logout' }),
@@ -102,6 +108,11 @@ function generatedPatches(expr) {
     return ps;
   }
   if ((m = /^length\((\w+)\) = 64 AND \1 NOT GLOB/.exec(expr))) return [{ [m[1]]: hex(63) }, { [m[1]]: hex(64, 'A') }, { [m[1]]: hex(64, 'g') }];
+  // Lowercase dotted keys (name_key, permission.code; M2): uppercase, bad character, leading digit.
+  // Values keep the 'gateway.' prefix so permission's domain/prefix CHECK is not the one that fails.
+  if ((m = /^(\w+) GLOB '\[a-z\]\*' AND \1 NOT GLOB '\*\[\^a-z0-9\._\]\*'$/.exec(expr))) {
+    return [{ [m[1]]: 'gateway.X' }, { [m[1]]: 'gateway.a-b' }, { [m[1]]: '9gateway.x' }];
+  }
   return [];
 }
 
@@ -118,6 +129,14 @@ const MANUAL = [
   ['session', { ended_at: null }], ['session', { end_reason: null }],
   ['retention_run', { data_type: 'technical' }],
   ['command_type', { can_schedule: 1, pin_policy: 'always' }], // renamed column (was allow_schedule)
+  // M2
+  ['vendor_type_map', { vendor_type: 'Heat' }], ['vendor_type_map', { vendor_type: ' HEAT' }],
+  ['condition', { code: null }], ['condition', { name_key: null }],   // known conditions need code + name_key
+  ['role', { name_key: null }],                                        // built-in roles are translated
+  ['permission', { domain: 'admin' }],
+  ['permission', { domain: 'fire', is_central_grant_required: 0 }],    // gateway.* code outside the gateway domain
+  ['permission', { code: 'panel.x', domain: 'gateway', is_central_grant_required: 0 }], // gateway domain without prefix
+  ['permission', { code: 'panel.x', domain: 'fire' }],                 // central grant on a non-gateway permission
 ];
 
 const hits = new Set(); // "<table>: <expr>" of every CHECK a case made fail

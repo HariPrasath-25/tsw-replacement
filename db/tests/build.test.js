@@ -8,7 +8,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
-const { buildDatabase, versionAtLeast, splitHeaderPragmas, listModules, SCHEMA_DIR, ROOT } = require('../tools/lib/schema');
+const { buildDatabase, versionAtLeast, splitHeaderPragmas, listModules, SCHEMA_DIR, SEED_DIR, ROOT } = require('../tools/lib/schema');
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'wsdb-')); }
 
@@ -72,7 +72,9 @@ test('migration log: one row per module at user_version, checksum = sha256 of th
   const db = buildDatabase(':memory:', { appliedBy: 'test-build' });
   try {
     const rows = db.prepare('SELECT version, module, checksum, applied_by FROM schema_version ORDER BY id').all();
-    const mods = listModules(SCHEMA_DIR);
+    // Schema modules first, then seed modules (prefixed 'seed/'), each with its own checksum.
+    const mods = [...listModules(SCHEMA_DIR), ...listModules(SEED_DIR).map((m) => ({ ...m, name: 'seed/' + m.name }))];
+    assert.ok(mods.length > listModules(SCHEMA_DIR).length, 'seed modules are logged');
     assert.deepEqual(rows.map((r) => r.module), mods.map((m) => m.name));
     for (const [i, m] of mods.entries()) {
       assert.equal(rows[i].checksum, crypto.createHash('sha256').update(m.sql, 'utf8').digest('hex'), m.name);
@@ -108,7 +110,8 @@ test('npm run db:build creates a fresh file and reports the SQLite version', () 
   const r = spawnSync(process.execPath, [path.join(ROOT, 'db/tools/build.js'), file], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /sqlite_version\(\) = 3\.\d+\.\d+/);
-  assert.match(r.stdout, /48 tables/);
+  assert.match(r.stdout, /53 tables/);
+  assert.match(r.stdout, /3 seed/);
 });
 
 test('docs/db/DATA_DICTIONARY.md is generated from the current schema (not stale)', () => {

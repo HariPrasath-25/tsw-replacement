@@ -8,7 +8,7 @@ test('04_telemetry: every table accepts a valid row', () => {
   const keyId = insert(db, 'telemetry_key', { code: 'sensitivity', name: 'Sensitivity', unit: '%/ft', value_kind: 'numeric', storage_mode: 'deadband', deadband: 0.1 });
   const cpuId = insert(db, 'telemetry_key', { code: 'cpu_pct', name: 'CPU', unit: '%', value_kind: 'numeric', storage_mode: 'interval', interval_sec: 60, rollup: 'hourly' });
   insert(db, 'device_type_telemetry', { device_type_id: f.deviceTypeId, telemetry_key_id: keyId, advisory_high: 3.5 });
-  insert(db, 'vendor_key_map', { vendor: 'Simplex', raw_key: 'presentSensitivitySelected', telemetry_key_id: keyId });
+  insert(db, 'vendor_key_map', { vendor_id: f.simplexVendorId, raw_key: 'presentSensitivitySelected', telemetry_key_id: keyId });
   insert(db, 'telemetry', { device_id: f.deviceId, telemetry_key_id: keyId, ts: T0, value: 2.1 });
   insert(db, 'gateway_telemetry', { gateway_id: f.gatewayId, telemetry_key_id: cpuId, ts: T0, value: 12.5 });
   insert(db, 'telemetry_rollup', {

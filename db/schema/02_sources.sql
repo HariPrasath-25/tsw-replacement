@@ -1,4 +1,65 @@
--- Module 02: sources — gateways, controllers, devices and their state (M1: D9, D10, D11, P8, P5)
+-- Module 02: sources — gateways, controllers, devices and their state (M1: D9, D10, D11, P8, P5; M2: N1, N6)
+
+-- ---------------------------------------------------------------------
+-- 2a. Reference lookups (M2, N1). Extensible domains live in tables, not CHECK lists (convention 9).
+--     Seeded by db/seed/01_lookups.sql with fixed ids; reference data, never deleted while referenced.
+--     name_key (N6, T14): externalised EN/AR text key, lowercase dotted (e.g. 'system.fire').
+--     NULL name_key = display the stored name as-is (admin- or runtime-created rows).
+-- ---------------------------------------------------------------------
+-- Monitored system domain (req 6, Section 2): fire is the only system in release 1. id 1 = fire.
+CREATE TABLE system (
+    id               INTEGER PRIMARY KEY,
+    code             TEXT    NOT NULL UNIQUE,          -- fire, bms, energy, access, cctv, other
+    name             TEXT    NOT NULL,
+    name_key         TEXT    UNIQUE                    -- N6, T14
+                     CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*'),
+    created_at       INTEGER NOT NULL CHECK (created_at > 0),
+    updated_at       INTEGER NOT NULL CHECK (updated_at > 0),
+    updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
+    row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1)
+) STRICT;
+
+-- Equipment vendors (N1). Matching is case-insensitive through match_key (upper-cased, trimmed),
+-- so 'Simplex', 'SIMPLEX' and ' simplex ' are one vendor. Proper nouns: no name_key.
+CREATE TABLE vendor (
+    id               INTEGER PRIMARY KEY,
+    name             TEXT    NOT NULL,                 -- as first written, e.g. 'Simplex'
+    match_key        TEXT    NOT NULL GENERATED ALWAYS AS (upper(trim(name))) STORED,  -- normalised lookup key
+    created_at       INTEGER NOT NULL CHECK (created_at > 0),
+    updated_at       INTEGER NOT NULL CHECK (updated_at > 0),
+    updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
+    row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1)
+) STRICT;
+CREATE UNIQUE INDEX ux_vendor_match_key ON vendor(match_key);
+
+-- Source protocols (N1, Section 13 module catalogue: BACnet, Modbus, CIP, Simplex, SNMP).
+-- M8 links each protocol to its gateway module catalogue entry.
+CREATE TABLE protocol (
+    id               INTEGER PRIMARY KEY,
+    code             TEXT    NOT NULL UNIQUE,          -- simplex, bacnet, modbus, cip, snmp
+    name             TEXT    NOT NULL,
+    name_key         TEXT    UNIQUE                    -- N6, T14
+                     CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*'),
+    created_at       INTEGER NOT NULL CHECK (created_at > 0),
+    updated_at       INTEGER NOT NULL CHECK (updated_at > 0),
+    updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
+    row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1)
+) STRICT;
+
+-- Device state codes with display precedence (req 1, 15, 19). Used by device_state from M4
+-- (primary_state = the active state with the lowest precedence). Seed list is Proposed (ADR-008).
+CREATE TABLE device_state_code (
+    id               INTEGER PRIMARY KEY,
+    code             TEXT    NOT NULL UNIQUE,          -- fire, priority2, supervisory, trouble, disabled, test, missing, unknown, normal
+    precedence       INTEGER NOT NULL UNIQUE CHECK (precedence >= 1),  -- 1 = most important
+    is_alarm         INTEGER NOT NULL DEFAULT 0 CHECK (is_alarm IN (0,1)),  -- 1 = an alarm type (req 6)
+    name_key         TEXT    UNIQUE                    -- N6, T14
+                     CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*'),
+    created_at       INTEGER NOT NULL CHECK (created_at > 0),
+    updated_at       INTEGER NOT NULL CHECK (updated_at > 0),
+    updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
+    row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1)
+) STRICT;
 
 -- ---------------------------------------------------------------------
 -- 2. Sources: gateways, controllers, devices
@@ -47,12 +108,11 @@ CREATE TABLE controller (
     id               INTEGER PRIMARY KEY,
     gateway_id       INTEGER NOT NULL REFERENCES gateway(id) ON DELETE RESTRICT,
     space_id         INTEGER REFERENCES space(id) ON DELETE SET NULL,  -- where the controller is installed
-    system           TEXT    NOT NULL DEFAULT 'fire'
-                     CHECK (system IN ('fire','bms','energy','access','cctv','other')),
-    protocol         TEXT    NOT NULL,                 -- 'simplex', 'bacnet', 'modbus', 'snmp'...
+    system_id        INTEGER NOT NULL DEFAULT 1 REFERENCES system(id) ON DELETE RESTRICT,     -- 1 = fire (N1)
+    protocol_id      INTEGER NOT NULL REFERENCES protocol(id) ON DELETE RESTRICT,             -- N1
     ref              TEXT    NOT NULL,                 -- fire node no., BACnet device instance, Modbus unit id
     name             TEXT    NOT NULL,
-    vendor           TEXT,
+    vendor_id        INTEGER REFERENCES vendor(id) ON DELETE RESTRICT,                        -- N1; NULL = not reported
     model            TEXT,
     firmware_version TEXT,
     conn_state       TEXT    NOT NULL DEFAULT 'unknown'
@@ -62,18 +122,22 @@ CREATE TABLE controller (
     updated_at       INTEGER NOT NULL CHECK (updated_at > 0),
     updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
     row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1),
-    UNIQUE (gateway_id, protocol, ref)
+    UNIQUE (gateway_id, protocol_id, ref)
 ) STRICT;
 CREATE INDEX ix_controller_space_id ON controller(space_id) WHERE space_id IS NOT NULL;
+CREATE INDEX ix_controller_system_id ON controller(system_id);
+CREATE INDEX ix_controller_protocol_id ON controller(protocol_id);
+CREATE INDEX ix_controller_vendor_id ON controller(vendor_id) WHERE vendor_id IS NOT NULL;
 
 -- Device classification: rules, aggregation, symbols and permissions key off these,
 -- never off vendor strings. Vendor types are mapped once in vendor_type_map.
 CREATE TABLE device_category (
     id               INTEGER PRIMARY KEY,
     code             TEXT    NOT NULL UNIQUE,          -- detector, manual_call_point, monitor_input...
-    system           TEXT    NOT NULL DEFAULT 'fire'
-                     CHECK (system IN ('fire','bms','energy','access','cctv','other')),
+    system_id        INTEGER NOT NULL DEFAULT 1 REFERENCES system(id) ON DELETE RESTRICT,     -- 1 = fire (N1)
     name             TEXT    NOT NULL,
+    name_key         TEXT    UNIQUE                    -- N6, T14
+                     CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*'),
     is_physical      INTEGER NOT NULL DEFAULT 1 CHECK (is_physical IN (0,1)),  -- 0 = virtual/controller-generated point
     sort_order       INTEGER NOT NULL DEFAULT 0,
     created_at       INTEGER NOT NULL CHECK (created_at > 0),
@@ -81,6 +145,7 @@ CREATE TABLE device_category (
     updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
     row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1)
 ) STRICT;
+CREATE INDEX ix_device_category_system_id ON device_category(system_id);
 
 -- Our device type (req 15, 20). id 0 = unknown / unmapped.
 CREATE TABLE device_type (
@@ -88,6 +153,8 @@ CREATE TABLE device_type (
     code               TEXT    NOT NULL UNIQUE,        -- smoke_detector, heat_detector, aux_relay...
     device_category_id INTEGER NOT NULL REFERENCES device_category(id) ON DELETE RESTRICT,
     name               TEXT    NOT NULL,
+    name_key           TEXT    UNIQUE                  -- N6, T14
+                       CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*'),
     has_analog         INTEGER NOT NULL DEFAULT 0 CHECK (has_analog IN (0,1)),   -- sensitivity/dirtiness trending
     can_disable        INTEGER NOT NULL DEFAULT 1 CHECK (can_disable IN (0,1)),
     can_test           INTEGER NOT NULL DEFAULT 0 CHECK (can_test IN (0,1)),
@@ -99,17 +166,19 @@ CREATE TABLE device_type (
 ) STRICT;
 CREATE INDEX ix_device_type_device_category_id ON device_type(device_category_id);
 
--- Vendor/controller type string -> our device_type (stored upper-case, so 'High Speed Bus' and 'HIGH SPEED BUS' match)
+-- Vendor/controller type string -> our device_type (stored upper-case, so 'High Speed Bus' and 'HIGH SPEED BUS' match;
+-- the service upper-cases before lookup, the CHECK refuses a mixed-case key)
 CREATE TABLE vendor_type_map (
     id               INTEGER PRIMARY KEY,
-    vendor           TEXT    NOT NULL,                 -- 'Simplex'
-    vendor_type      TEXT    NOT NULL,                 -- e.g. 'SMOKE DETECTOR' (upper-case)
+    vendor_id        INTEGER NOT NULL REFERENCES vendor(id) ON DELETE RESTRICT,  -- N1 (was free text)
+    vendor_type      TEXT    NOT NULL                  -- e.g. 'SMOKE DETECTOR' (upper-case, trimmed)
+                     CHECK (vendor_type = upper(trim(vendor_type))),
     device_type_id   INTEGER NOT NULL REFERENCES device_type(id) ON DELETE RESTRICT,
     created_at       INTEGER NOT NULL CHECK (created_at > 0),
     updated_at       INTEGER NOT NULL CHECK (updated_at > 0),
     updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
     row_version      INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1),
-    UNIQUE (vendor, vendor_type)
+    UNIQUE (vendor_id, vendor_type)                    -- leading vendor_id also serves the FK
 ) STRICT;
 CREATE INDEX ix_vendor_type_map_device_type_id ON vendor_type_map(device_type_id);
 

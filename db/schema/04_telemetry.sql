@@ -1,4 +1,4 @@
--- Module 04: telemetry — storage rules, vendor key mapping, raw readings, roll-ups (M1: D9, D10, D11, P8)
+-- Module 04: telemetry — storage rules, vendor key mapping, raw readings, roll-ups (M1: D9, D10, D11, P8; M2: N1, N6)
 
 -- ---------------------------------------------------------------------
 -- 3b. Telemetry: rules first, then data
@@ -9,6 +9,8 @@ CREATE TABLE telemetry_key (
     id                INTEGER PRIMARY KEY,
     code              TEXT    NOT NULL UNIQUE,         -- our name, e.g. 'sensitivity', 'cpu_pct'
     name              TEXT    NOT NULL,
+    name_key          TEXT    UNIQUE                   -- N6, T14
+                      CHECK (name_key GLOB '[a-z]*' AND name_key NOT GLOB '*[^a-z0-9._]*'),
     unit              TEXT,                            -- '%/ft', '%', 'degC', 'count'
     value_kind        TEXT    NOT NULL CHECK (value_kind IN ('numeric','boolean','enum','counter')),
                        -- counter = always-increasing total; roll-ups store the increase (delta)
@@ -55,7 +57,7 @@ CREATE INDEX ix_device_type_telemetry_telemetry_key_id ON device_type_telemetry(
 -- Vendor/gateway field names -> our keys, with optional scaling (value * scale + value_offset)
 CREATE TABLE vendor_key_map (
     id                INTEGER PRIMARY KEY,
-    vendor            TEXT    NOT NULL,                -- 'Simplex', 'Omniconn Gateway'
+    vendor_id         INTEGER NOT NULL REFERENCES vendor(id) ON DELETE RESTRICT,  -- N1 (was free text): Simplex, Omniconn
     raw_key           TEXT    NOT NULL,                -- e.g. 'presentSensitivitySelected'
     telemetry_key_id  INTEGER NOT NULL REFERENCES telemetry_key(id) ON DELETE RESTRICT,
     scale             REAL    NOT NULL DEFAULT 1,
@@ -66,7 +68,7 @@ CREATE TABLE vendor_key_map (
     updated_at        INTEGER NOT NULL CHECK (updated_at > 0),
     updated_by_user_account_id INTEGER REFERENCES user_account(id) ON DELETE RESTRICT,
     row_version       INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1),
-    UNIQUE (vendor, raw_key)
+    UNIQUE (vendor_id, raw_key)                        -- leading vendor_id also serves the FK
 ) STRICT;
 CREATE INDEX ix_vendor_key_map_telemetry_key_id ON vendor_key_map(telemetry_key_id);
 

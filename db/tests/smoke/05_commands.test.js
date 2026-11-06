@@ -5,8 +5,8 @@ const { freshDb, insert, insertFixtures, assertModuleCovered, T0 } = require('..
 test('05_commands: every table accepts a valid row', () => {
   const db = freshDb();
   const f = insertFixtures(db);
-  const silenceId = insert(db, 'command_type', { system: 'fire', code: 'silence', name: 'Silence', target: 'controller', permission_id: f.permissionId, pin_policy: 'if_enabled' });
-  const syncId = insert(db, 'command_type', { system: 'fire', code: 'sync_clock', name: 'Sync clock', target: 'controller', permission_id: f.permissionId, can_schedule: 1 });
+  const silenceId = insert(db, 'command_type', { system_id: f.fireSystemId, code: 'silence', name: 'Silence', target: 'controller', permission_id: f.permissionId, pin_policy: 'if_enabled' });
+  const syncId = insert(db, 'command_type', { system_id: f.fireSystemId, code: 'sync_clock', name: 'Sync clock', target: 'controller', permission_id: f.permissionId, can_schedule: 1 });
   const schedId = insert(db, 'command_schedule', {
     name: 'Nightly clock sync', command_type_id: syncId, site_id: f.siteId, controller_id: f.controllerId,
     cron_expr: '0 3 * * *', created_by_user_account_id: f.userId, created_at: T0,

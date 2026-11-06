@@ -31,6 +31,16 @@ const RENAMES = {
     'setting.updated_by': 'updated_by_user_account_id',
     'retention_policy.updated_by': 'updated_by_user_account_id',
     'update_history.started_by': 'started_by_user_account_id',
+    // M2, N1 / G9 (extensible domains: free text and CHECK lists -> lookup table FKs)
+    'controller.system': 'system_id',
+    'controller.protocol': 'protocol_id',
+    'controller.vendor': 'vendor_id',
+    'device_category.system': 'system_id',
+    'alarm_class.system': 'system_id',
+    'command_type.system': 'system_id',
+    'vendor_type_map.vendor': 'vendor_id',
+    'vendor_key_map.vendor': 'vendor_id',
+    'event.condition': 'condition_id',
   },
   objects: {
     // M1, convention 13 (ix_/ux_<table>_..., trg_<table>_...)

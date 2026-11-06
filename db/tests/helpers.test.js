@@ -11,7 +11,7 @@ test('explain + assertNoScan: indexed lookup passes, full scan fails', () => {
   assert.ok(byDevice.some((r) => /SEARCH event USING (COVERING )?INDEX ix_event_device/.test(r.detail)), JSON.stringify(byDevice));
   assertNoScan(byDevice);
 
-  const byCondition = explain(db, "SELECT id FROM event WHERE condition = 'Open Circuit'");
+  const byCondition = explain(db, 'SELECT id FROM event WHERE condition_id = 7'); // no index until M5 (ADR-002)
   assert.throws(() => assertNoScan(byCondition), /scans event/);
   db.close();
 });
