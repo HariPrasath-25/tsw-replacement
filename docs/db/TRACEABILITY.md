@@ -2,7 +2,7 @@
 
 Source: `docs/reference/architecture_roadmap_v1.2.md`. Appendix A covers requirements 1–123, Appendix B covers targets T1–T18, and Section 13 covers Gateway Management acceptance tests G01–G12. Gap IDs refer to `docs/db/SCHEMA_REVIEW.md`.
 
-**Baseline:** Draft v2 as split into `db/schema/` in M0. **M1** (2026-11-05) applied the cross-cutting conventions: ON DELETE policy (ADR-001), JSON/time/hash/UUID domain CHECKs, P8 audit columns, AUTOINCREMENT, the connection profile (ADR-003) and the migration log (ADR-004). Every CHECK added in M1 is tested in `checks.test.js`. **M2** (2026-11-06) replaced the system/vendor/protocol/condition domains with lookup tables (ADR-005, ADR-006), added `name_key` (T14) and seeded alarm classes, conditions, device state codes, permissions and roles (ADR-007); seeds are idempotent (`seed.test.js`). `db/tests/traceability.test.js` fails if any ID from the architecture document is missing here.
+**Baseline:** Draft v2 as split into `db/schema/` in M0. **M1** (2026-11-05) applied the cross-cutting conventions: ON DELETE policy (ADR-001), JSON/time/hash/UUID domain CHECKs, P8 audit columns, AUTOINCREMENT, the connection profile (ADR-003) and the migration log (ADR-004). Every CHECK added in M1 is tested in `checks.test.js`. **M2** (2026-11-06) replaced the system/vendor/protocol/condition domains with lookup tables (ADR-005, ADR-006), added `name_key` (T14) and seeded alarm classes, conditions, device state codes, permissions and roles (ADR-007); seeds are idempotent (`seed.test.js`). **M3** (2026-11-06) added the site lifecycle, space hierarchy guards with a trigger-maintained closure table (ADR-010, ADR-011), floor plan revisions with a draft-first replacement script (ADR-012, `docs/db/PLAN_REPLACEMENT.md`) and deferred Arabic search keys to M4 (ADR-013). `db/tests/traceability.test.js` fails if any ID from the architecture document is missing here.
 
 **Columns.** *DB relevant?* is Y when the database stores, constrains or serves the requirement. N rows are owned by the service, UI, installer or process, and later milestones don't track them here. *Objects* are tables and columns. *Constraint/trigger* lists only the existing enforcement, not the planned enforcement. *Test* paths are relative to `db/tests/`.
 
@@ -33,7 +33,7 @@ Every milestone updates the rows it touches: objects, constraints, tests and sta
 | 12 Refusal when offline | P1 | Y | command.status = 'refused', schedule_run.skip_reason | status / skip_reason CHECK | smoke/05_commands | Partial — D4 |
 | 13 Operator notes | P3 | Y | alarm.note | — | smoke/03_events_alarms | Gap — G10 |
 | 14 Wallboard mode | P2 | N | — (client) | — | — | N/A |
-| 15 Device register | P1 | Y | device, device_state, device_type, space, controller | UNIQUE (controller_id, address), ix_device_space_id, ix_device_device_type_id | smoke/02_sources | Partial — G17, P9, G11 |
+| 15 Device register | P1 | Y | device, device_state, device_type, space, controller | UNIQUE (controller_id, address), ix_device_space_id, ix_device_device_type_id | smoke/02_sources | Partial — G17, P9 (deferred to M4 FTS5, ADR-013), G11 |
 | 16 Full device metadata | P2 | Y | device.attributes_json, device_state.analog_json, device_hardware | json_valid + json_type 'object' CHECKs (M1) | smoke/02_sources, checks | Covered (M1) |
 | 17 Device state history | P2 | Y | device_state_history, retention_policy ('device_state_history') | ix_device_state_history_device_id_rcv_time; JSON array CHECKs; device_id RESTRICT (M1) | smoke/02_sources, checks | Partial — D2, D1 |
 | 18 Device discovery review | P2 | Y | device.discovery_state | discovery_state CHECK | smoke/02_sources | Gap — G6 |
@@ -47,17 +47,17 @@ Every milestone updates the rows it touches: objects, constraints, tests and sta
 | 26 Firmware version tracking | P3 | Y | gateway.runtime_version, contract_version, controller.firmware_version (current only) | — | smoke/02_sources | Gap — G5 |
 | 27 Outdated version flagging | P3 | Y | — | — | — | Gap — G5 |
 | 28 Firmware change audit | P2 | Y | audit_log | — | — | Gap — G5 |
-| 29 Floor plan upload limits | P1 | Y | floor_plan (mime_type, width_px, height_px, size_bytes, sha256) | mime CHECK, 1–8192 px, ≤ 20 MB CHECKs | smoke/01_tenancy | Partial — D10 (sha256 domain, no dedupe) |
-| 30 Space hierarchy (≥ 3 levels) | P1 | Y | space (site_id, parent_id, type) | type CHECK, ix_space_site_parent | smoke/01_tenancy | Partial — D6 (cross-site parent, cycles) |
-| 31 Drag-and-drop placement | P1 | Y | plan_placement (x, y, rotation_deg) | x/y BETWEEN 0 AND 1, exactly-one-target CHECK, rotation_deg [0, 360) CHECK, ux_plan_placement_* | smoke/01_tenancy | Partial — D6, D10 |
+| 29 Floor plan upload limits | P1 | Y | floor_plan (mime_type, width_px, height_px, size_bytes, sha256, revision_no) | mime CHECK, 1–8192 px, ≤ 20 MB CHECKs, sha256 domain CHECK, ux_floor_plan_space_id_sha256 (live revisions, ADR-012) | smoke/01_tenancy, checks, tenancy (G7 replace/reject) | Covered |
+| 30 Space hierarchy (≥ 3 levels) | P1 | Y | space (site_id, parent_space_id, type, depth), space_type_rule, space_closure | depth CHECK 0–7 (8 levels), trg_space_hierarchy_ins/_upd (same site, no cycle, type pair, depth), trg_space_site_immutable, trg_space_depth_derived, trg_space_closure_ins/_move (ADR-010, ADR-011) | triggers (trg_space_*), tenancy (cross-site, cycles, depth, closure oracle 2,000 nodes) | Covered |
+| 31 Drag-and-drop placement | P1 | Y | plan_placement (floor_plan_id revision, x, y, rotation_deg, status) | x/y BETWEEN 0 AND 1, exactly-one-target CHECK, rotation_deg [0, 360) CHECK, ux_plan_placement_*, trg_plan_placement_ins/_upd/_del (target in plan's site, frozen revisions) | smoke/01_tenancy, triggers (trg_plan_placement_*), tenancy | Covered |
 | 32 Plan performance | P2 | Y | plan_placement (read by floor_plan_id) | ux_plan_placement_device / controller / gateway, ix_plan_placement_floor_plan_id | — | Not measured — M12 (T5) |
 | 33 Bulk mapping | P1 | Y | device.space_id | — | smoke/02_sources | Partial — D6 |
-| 34 Bulk placement | P1 | Y | plan_placement | ux_plan_placement_device | smoke/01_tenancy | Partial — D6 |
-| 35 Mapping completeness | P2 | Y | device.space_id, plan_placement | — | — | Gap — M10 view (req 35) |
+| 34 Bulk placement | P1 | Y | plan_placement | ux_plan_placement_device, trg_plan_placement_ins (target in plan's site) | smoke/01_tenancy, tenancy (cross-site placement) | Covered |
+| 35 Mapping completeness | P2 | Y | v_space_mapping_completeness (stub), device.space_id, space_closure, plan_placement, floor_plan.status | — | tenancy (req 35 counts, no SCAN) | Partial — M10 (per-site roll-up, unmapped list) |
 | 36 Control from the plan | P2 | Y | command (same path as req 19) | — | smoke/05_commands | Partial — D4 |
 | 37 Navigate to alarm | P2 | Y | alarm.device_id → plan_placement.device_id | ix_plan_placement_device_id | smoke/03_events_alarms | Partial — P5 (alarm.device_id) |
 | 38 Geographic view | P3 | Y | site (no position) | — | — | Gap — not in SCHEMA_REVIEW (site location); to propose in M3 |
-| 39 Plan replacement (recoverable) | P3 | Y | floor_plan.is_current, plan_placement.status | status CHECK; plan_placement.floor_plan_id RESTRICT (was CASCADE, ADR-001) | smoke/01_tenancy | Gap — G7 |
+| 39 Plan replacement (recoverable) | P3 | Y | floor_plan (revision_no, replaces_floor_plan_id, status, is_current generated), plan_placement (per revision, status needs_review) | ux_floor_plan_current, ux_floor_plan_draft, ux_floor_plan_space_id_revision_no, trg_floor_plan_revision_ins, trg_floor_plan_status (confirm-all), trg_floor_plan_content_immutable, trg_plan_placement_* (frozen revisions); transaction script docs/db/PLAN_REPLACEMENT.md (ADR-012) | triggers (trg_floor_plan_*), tenancy (G7, replace/reject runs the doc SQL) | Covered |
 | 40 Mapping import | P2 | N | — (service validates, then writes device.space_id through the normal path) | — | — | N/A |
 | 41 Condition statistics | P2 | Y | condition (code, raw_name, match_key, is_reported_unknown, name_key) seeded with the 8 conditions; event.condition_id; first-sight UPSERT (ADR-006) | ux_condition_match_key; known-condition CHECK; FK RESTRICT (M2) | seed, reference, checks | Partial — P5 (event.condition_id index and statistics roll-up, M5) |
 | 42 Drill-through | P3 | Y | event, alarm, device, plan_placement | — | — | Partial — P5, G9 |
@@ -72,12 +72,12 @@ Every milestone updates the rows it touches: objects, constraints, tests and sta
 | 51 Retention floors and archiving | P1 | Y | retention_policy, retention_run | keep_days ≥ min_days, audit_log keep_days NULL; keep_days ≥ 1, min_days ≥ 0, retention_run.data_type domain, archive_sha256 CHECK (M1) | smoke/09_ops, checks | Gap — D1, D2, G19 |
 | 52 Scheduled reports | P3 | Y | — | — | — | Gap — G8 |
 | 53 Response analytics | P4 | Y | alarm.raised_at, acked_at, acked_by_user_account_id | — | — | Partial — G10, P7 (M10 views) |
-| 54 Tenant management | P1 | Y | tenant.status, site | status CHECK, UNIQUE (tenant_id, name) | smoke/01_tenancy | Partial — P8, G11 |
-| 55 Tenant isolation | P1 | Y | event, audit_log, quarantine, command (no tenant/site column) | — | — | Gap — G11 |
+| 54 Tenant management | P1 | Y | tenant (status, archived_at), site (status, archived_at) | status CHECKs, archived ⇔ archived_at CHECKs, UNIQUE (tenant_id, name); suspension is access-only (schema comments) | smoke/01_tenancy, checks, tenancy (suspended/archived site still ingests) | Partial — G11 |
+| 55 Tenant isolation | P1 | Y | space_closure (space scope in one indexed join); event, audit_log, quarantine, command (no tenant/site column yet) | — | tenancy (scope join, no SCAN) | Gap — G11 (log tables, M5–M9) |
 | 56 Roles; never zero manage-users holders | P1 | Y | role (is_builtin, name_key), role_permission; seed 03_rbac: Administrator, Engineer, Operator, Viewer (ADR-007) | UNIQUE (role_id, permission_id); trg_role_builtin_no_delete; trg_role_builtin_immutable; built-in name_key CHECK (M2) | seed, reference, triggers, smoke/06_identity | Partial — G12 (last-admin rule, M7) |
 | 57 Granular permissions | P1 | Y | permission (code, domain, name_key, is_central_grant_required); seed 03_rbac: 14 fire/platform codes, one per req 57 action (ADR-007) | UNIQUE (code); code format, domain, gateway-prefix and central-grant CHECKs (M2) | seed, checks | Covered (M2) |
 | 58 Single enforcement point | P1 | N | — (service) | — | — | N/A |
-| 59 User scoping | P1 | Y | user_role (tenant_id, site_id, space_id) | ux_user_role_scope, trg_user_role_scope, trg_user_role_scope_upd | triggers (trg_user_role_scope*), smoke/06_identity | Partial — D6 |
+| 59 User scoping | P1 | Y | user_role (tenant_id, site_id, space_id), space_closure | ux_user_role_scope, trg_user_role_scope, trg_user_role_scope_upd, ix_space_closure_descendant_space_id (ADR-011) | triggers (trg_user_role_scope*), smoke/06_identity, tenancy (role on floor applies beneath, not above) | Covered |
 | 60 Authentication (Windows / AD / local) | P1 | Y | user_account (auth_type, windows_sid, password_hash) | auth_type CHECK, local requires password_hash | smoke/06_identity | Partial — D7 |
 | 61 Directory fallback account | P1 | Y | user_account.is_fallback | is_fallback CHECK | smoke/06_identity | Gap — D7 (not restricted to local, not single) |
 | 62 Inactivity lock and PIN | P1 | Y | session.locked, user_account.pin_hash | — | smoke/06_identity | Partial — D7 (no pin_set_at) |

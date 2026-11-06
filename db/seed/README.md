@@ -7,6 +7,7 @@ Ordered reference-data modules `NN_<area>.sql`, applied by `npm run db:build` af
 | `01_lookups.sql` | system, vendor, protocol | ADR-005 |
 | `02_alarm.sql` | alarm_class (req 6), device_state_code (proposed), condition (req 41) | ADR-006, ADR-007, ADR-008 |
 | `03_rbac.sql` | permission (req 57, Section 13), built-in roles (req 56, Section 13), role-permission matrix | ADR-007 |
+| `04_space.sql` | space_type_rule: allowed parent/child space types (req 30, D6) | ADR-010 |
 
 Rules (checked by `db/tests/seed.test.js`):
 - **Idempotent.** Every statement is `INSERT … ON CONFLICT DO NOTHING`. Applying a module twice writes nothing.
