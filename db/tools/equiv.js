@@ -41,6 +41,8 @@ const RENAMES = {
     'vendor_type_map.vendor': 'vendor_id',
     'vendor_key_map.vendor': 'vendor_id',
     'event.condition': 'condition_id',
+    // M3, convention 2 / ADR-000 item 7
+    'space.parent_id': 'parent_space_id',
   },
   objects: {
     // M1, convention 13 (ix_/ux_<table>_..., trg_<table>_...)

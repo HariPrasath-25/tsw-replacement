@@ -81,7 +81,7 @@ function insertFixtures(db) {
   f.tenantId = insert(db, 'tenant', { name: 'Fixture Tenant', created_at: T0 });
   f.siteId = insert(db, 'site', { tenant_id: f.tenantId, name: 'Fixture Site', timezone: 'Asia/Dubai', created_at: T0 });
   f.buildingId = insert(db, 'space', { site_id: f.siteId, type: 'building', name: 'Tower A' });
-  f.floorId = insert(db, 'space', { site_id: f.siteId, parent_id: f.buildingId, type: 'floor', name: 'Floor 16' });
+  f.floorId = insert(db, 'space', { site_id: f.siteId, parent_space_id: f.buildingId, type: 'floor', name: 'Floor 16' });
 
   f.userId = insert(db, 'user_account', {
     username: 'admin', display_name: 'Fixture Admin', auth_type: 'local',

@@ -279,3 +279,128 @@ The linter accepts an allowlist entry only if its ADR heading exists in this fil
 **Alternatives.** *Direct user grants (`user_permission`):* this is a second permission path, which works against req 58's single enforcement point. *A custom role per site:* this works today, with no schema change.
 
 **PostgreSQL portability.** Direct.
+
+## ADR-010 Space hierarchy rules and depth cap
+
+- **Status:** Accepted (type pairs and depth cap approved in chat, 2026-11-06)
+- **Date:** 2026-11-06 · **Milestone:** M3 · **Closes:** D6 (space part) · **Requirements:** 30, 54, 59
+
+**Context.** In Draft v2, `space.parent_id` could point at a space in another site or at one of the space's own descendants (D6). Nothing constrained which type sits under which. Req 30 needs at least three levels per site. M3 also does the deferred rename `parent_id` → `parent_space_id` (ADR-000 item 7).
+
+**Decision.**
+- **Allowed type pairs** are reference data in `space_type_rule(parent_type, child_type)`. A NULL `parent_type` means the type is allowed at the root of a site. Seeded by `db/seed/04_space.sql`:
+
+  | Parent | Allowed children |
+  |---|---|
+  | root | building, other |
+  | building | floor, zone, other |
+  | floor | zone, room, other |
+  | zone | zone, room, other |
+  | room | other |
+  | other | any type |
+
+- **Triggers abort with `space: <rule>`.**
+  - `trg_space_hierarchy_ins` / `_upd` check four rules:
+    - the parent is in the same site;
+    - no self-parent and no cycle (a recursive CTE walks up from the new parent);
+    - the type pair is allowed, including when a type change would orphan an existing child;
+    - the depth cap holds, counting the moved subtree's height.
+  - `trg_space_site_immutable` stops `site_id` from changing. Moving a space to another site means archiving it and creating a new one, so history keeps pointing at the right site.
+- **`space.depth`** is 0 at the root and `CHECK (depth BETWEEN 0 AND 7)`, so a site can have up to 8 levels and always has the 3 that req 30 requires.
+  - It's derived from `space_closure` by `trg_space_closure_ins` / `_move`.
+  - `trg_space_depth_derived` rejects any write that disagrees with the closure.
+
+**Alternatives.**
+- *Strict building > floor > zone > room:* not chosen. Real sites have outdoor areas, plant rooms and wings that don't fit it.
+- *Permissive (only the depth and cycle rules):* not chosen, because nonsense such as a building under a room would pass.
+- *A `space_type` lookup table with `space_type_id`:* not chosen. The five types are a closed list used by the UI icons, and replacing `space.type` would remove a Draft v2 column.
+
+**PostgreSQL portability.** The rule table maps directly, and `IFNULL` becomes `COALESCE`. The triggers become a `BEFORE INSERT OR UPDATE` trigger function. A recursive CTE inside a trigger is standard. `depth` could stay trigger-maintained, or `ltree` could replace both depth and the closure.
+
+## ADR-011 space_closure (WITHOUT ROWID), trigger-maintained
+
+- **Status:** Accepted
+- **Date:** 2026-11-06 · **Milestone:** M3 · **Closes:** D6 (scope part) · **Requirements:** 55, 59
+
+**Context.** A user_role scoped to a space applies to that space and everything beneath it (req 59). Every scope check and every isolation filter (req 55) would otherwise need a recursive walk, and a recursive walk can't be one indexed predicate.
+
+**Decision.**
+- **Table:** `space_closure(ancestor_space_id, descendant_space_id, depth)`.
+  - `PRIMARY KEY (ancestor_space_id, descendant_space_id)`, **WITHOUT ROWID**. This is a convention 1 exception: a natural composite key, never referenced by an FK, always read by key prefix. It's 2 integers and a depth, so a rowid plus a separate unique index would double its size.
+  - It includes the self row at depth 0, so `ancestor = :space` alone covers "this space and beneath".
+  - `ix_space_closure_descendant_space_id (descendant_space_id, depth)` covers the reverse lookup ("all ancestors of X", used by scope checks).
+  - Both FKs are `ON DELETE CASCADE` because the rows are pure derived data.
+- **Maintenance**, by triggers on `space`:
+  - `trg_space_closure_ins` writes the self row plus one row per ancestor of the parent.
+  - `trg_space_closure_move` (AFTER UPDATE OF parent_space_id) deletes the links from the old ancestors to the subtree, inserts the cross product of the new ancestors and the subtree, then re-derives `depth` for the subtree.
+- **Scope check, one indexed join:**
+
+  ```sql
+  SELECT 1 FROM user_role ur
+  JOIN space_closure sc ON sc.ancestor_space_id = ur.space_id
+  WHERE ur.user_id = :u AND sc.descendant_space_id = :space
+  ```
+
+- **Write protection.** SQLite triggers can't tell maintenance writes apart from direct ones without a flag table. So the rule is that only the triggers write `space_closure`; the service never does. `tenancy.test.js` checks the table against a recursive-CTE oracle: a random tree of 2,000 spaces plus 200 random moves.
+
+**Alternatives.**
+- *Recursive CTE at query time:* rejected. It isn't one indexed predicate, and its cost grows with depth on every scope check.
+- *Materialised path (`/1/5/17/`) with a LIKE prefix:* rejected. LIKE prefix use of an index is fragile in SQLite (case-sensitivity pragmas), and moves rewrite strings.
+- *Nested sets:* rejected. Every insert renumbers half the tree.
+
+**PostgreSQL portability.** The same table works as an ordinary table with a composite PK, maintained by trigger functions. `ltree` with a GiST index is a native alternative.
+
+## ADR-012 Floor plan revisions and draft-first replacement
+
+- **Status:** Accepted (flow, confirm-all rule and dedupe scope approved in chat, 2026-11-06)
+- **Date:** 2026-11-06 · **Milestone:** M3 · **Closes:** G7 · **Requirements:** 29, 31, 34, 39
+
+**Context.** Draft v2 allowed several `is_current = 1` plans per space, and placements weren't tied to a plan revision, so rejecting a replacement couldn't restore anything (G7). Req 39: placements are shown against the new image for confirmation *before* the replacement is committed, and the previous image and placements are recoverable if the replacement is rejected.
+
+**Decision.**
+- **New `floor_plan` columns:**
+  - `revision_no`: per space, assigned max + 1 by trigger, with `ux_floor_plan_space_id_revision_no`.
+  - `replaces_floor_plan_id`: must be the space's current plan at upload.
+  - `status`: draft / current / superseded / rejected.
+  - `status_changed_at`.
+- **`is_current`** stays for Draft v2 readers as `GENERATED ALWAYS AS (status = 'current') VIRTUAL`. A generated column can't be written, so the lint `bool` CHECK doesn't apply (allowlisted under this ADR).
+- **Indexes:**
+  - `ux_floor_plan_current` and `ux_floor_plan_draft`: at most one current and one pending draft per space.
+  - `ux_floor_plan_space_id_sha256 … WHERE status IN ('draft','current')`: dedupe over live revisions only, so an image that was rejected or superseded once can be uploaded again.
+- **State machine** (`trg_floor_plan_status`): draft → current | rejected, and current → superseded. Superseded and rejected are final.
+  - Current → superseded needs a pending draft that replaces the plan.
+  - Draft → current needs the replaced plan to be superseded first, and **no placement on the draft may be `needs_review`** (confirm-all).
+  - A new revision is inserted as `draft`, or as `current` only when the space has no current plan.
+- **Immutability:** revision content (file, dimensions, hash, space, revision_no, uploader) can't change (`trg_floor_plan_content_immutable`).
+- **Placements belong to one revision.**
+  - The placement triggers freeze placements of superseded and rejected revisions (no insert, update or delete) and forbid moving a placement to another revision.
+  - `needs_review` is allowed only on a draft.
+- **Flow.** The replacement is draft-first. The current revision and its placements are never modified, so a rejected draft leaves them exactly as they were: that is the req 39 restore. The transaction script is in `docs/db/PLAN_REPLACEMENT.md`, and its SQL is executed by `tenancy.test.js`.
+
+**Alternatives.**
+- *Promote while some placements still need review:* not chosen; req 39 confirms before commit.
+- *A post-commit rollback path (superseded → current):* not chosen; not required, because rejection happens before commit.
+- *Full `UNIQUE (space_id, sha256)`:* not chosen; it blocks re-uploading an image that was rejected once.
+- *Drop `is_current`:* rejected, because removing a Draft v2 column needs a human decision and the generated column costs nothing.
+
+**PostgreSQL portability.** Partial unique indexes and the generated column (`GENERATED ALWAYS AS … STORED`) map directly. The triggers become trigger functions. The draft/current swap needs the same order (supersede, then promote), or a `DEFERRABLE` exclusion constraint.
+
+## ADR-013 Arabic/Latin name search keys deferred to the M4 FTS5 design (P9)
+
+- **Status:** Accepted (deferral approved in chat, 2026-11-06)
+- **Date:** 2026-11-06 · **Milestone:** M3 · **Closes:** — (P9 deferred to M4) · **Requirements:** 15, 55, T14
+
+**Context.** `COLLATE NOCASE` folds only ASCII (P9). Site, space and device names are typed in English or Arabic, and search must match them regardless of case, diacritics and letter variants. SQLite generated columns can't call an app-defined normaliser safely: the function would have to be registered on every connection, and `trusted_schema=OFF` (ADR-003) blocks app functions in schema expressions.
+
+**Decision.** M3 adds no search column. M4 designs one FTS5 search for devices, spaces and sites (req 15), scoped by site so that isolation holds (req 55). Its normalisation, applied by the service when it writes the index and when it builds the query, is:
+1. Unicode NFKC.
+2. Case-fold.
+3. Strip Arabic tashkeel (U+064B–U+065F, U+0670) and tatweel (U+0640).
+4. Unify the alef forms أ إ آ ٱ → ا, ى → ي, and ة → ه.
+5. Map Arabic-Indic digits to ASCII.
+
+FTS5 `unicode61 remove_diacritics 2` handles Latin diacritics.
+
+**Alternatives.** *A service-maintained `name_search` column now:* not chosen. It would be superseded by the M4 FTS5 table.
+
+**PostgreSQL portability.** `unaccent` and a custom normalising function behind a `GENERATED` column with a `pg_trgm` or `tsvector` index.

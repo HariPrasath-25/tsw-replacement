@@ -24,17 +24,19 @@ function setup() {
   f.keyId = insert(db, 'telemetry_key', { code: 'sensitivity', name: 'Sensitivity', value_kind: 'numeric', storage_mode: 'on_change' });
   f.schedTypeId = insert(db, 'command_type', { system_id: f.fireSystemId, code: 'sync_clock', name: 'Sync', target: 'controller', permission_id: f.permissionId, can_schedule: 1 });
   f.scheduleId = insert(db, 'command_schedule', { name: 'S', command_type_id: f.schedTypeId, site_id: f.siteId, controller_id: f.controllerId, interval_sec: 3600, created_by_user_account_id: f.userId });
-  f.floorPlanId = insert(db, 'floor_plan', { space_id: f.floorId, file_name: 'a.png', mime_type: 'image/png', width_px: 10, height_px: 10, size_bytes: 10, sha256: hex(64), storage_path: 'a', uploaded_at: T0 });
+  f.floorPlanId = insert(db, 'floor_plan', { space_id: f.floorId, revision_no: 1, status: 'current', file_name: 'a.png', mime_type: 'image/png', width_px: 10, height_px: 10, size_bytes: 10, sha256: hex(64), storage_path: 'a', uploaded_at: T0 });
   return { db, f };
 }
 
 /** One valid row per table that has CHECKs new since Draft v2. */
 const VALID = {
   schema_version: () => ({ version: 9, module: 'm9', checksum: hex(64), applied_at: T0, applied_by: 'test', description: 'd' }),
-  tenant: () => ({ name: 'T2', updated_by_user_account_id: null }),
-  site: (f) => ({ tenant_id: f.tenantId, name: 'S2', timezone: 'UTC' }),
-  space: (f) => ({ site_id: f.siteId, parent_id: f.floorId, type: 'zone', name: 'Z' }),
-  floor_plan: (f) => ({ space_id: f.floorId, file_name: 'b.png', mime_type: 'image/png', width_px: 10, height_px: 10, size_bytes: 10, sha256: hex(64, 'b'), storage_path: 'b', uploaded_at: T0 }),
+  tenant: () => ({ name: 'T2', status: 'archived', archived_at: T0, updated_by_user_account_id: null }),
+  site: (f) => ({ tenant_id: f.tenantId, name: 'S2', timezone: 'UTC', status: 'archived', archived_at: T0 }),
+  space_type_rule: () => ({ parent_type: 'room', child_type: 'room' }),
+  space: (f) => ({ site_id: f.siteId, parent_space_id: f.floorId, type: 'zone', name: 'Z' }),
+  space_closure: (f) => ({ ancestor_space_id: f.floorId, descendant_space_id: f.buildingId, depth: 1 }), // CHECK-only row
+  floor_plan: (f) => ({ space_id: f.floorId, revision_no: 2, replaces_floor_plan_id: f.floorPlanId, status: 'draft', status_changed_at: T0, file_name: 'b.png', mime_type: 'image/png', width_px: 10, height_px: 10, size_bytes: 10, sha256: hex(64, 'b'), storage_path: 'b', uploaded_at: T0 }),
   plan_placement: (f) => ({ floor_plan_id: f.floorPlanId, device_id: f.deviceId, x: 0.5, y: 0.5, rotation_deg: 90, placed_at: T0 }),
   system: () => ({ code: 's2', name: 'S2', name_key: 'system.s2' }),
   vendor: () => ({ name: 'Notifier' }),
@@ -118,6 +120,14 @@ function generatedPatches(expr) {
 
 // Hand-written cases for CHECKs whose shape the generator does not cover.
 const MANUAL = [
+  // M3
+  ['tenant', { status: 'closed', archived_at: null }], ['tenant', { archived_at: null }], ['tenant', { status: 'active' }],
+  ['site', { status: 'closed', archived_at: null }], ['site', { archived_at: null }], ['site', { status: 'suspended' }],
+  ['space_type_rule', { parent_type: 'wing' }], ['space_type_rule', { child_type: 'wing' }],
+  ['space', { depth: 8 }], ['space', { depth: -1 }],
+  ['space_closure', { depth: 8 }], ['space_closure', { depth: -1 }],
+  ['floor_plan', { status: 'archived' }],
+  ['plan_placement', { status: 'moved' }],
   ['plan_placement', { rotation_deg: 360 }], ['plan_placement', { rotation_deg: -0.5 }],
   ['telemetry_key', { decimals: 7 }], ['telemetry_key', { decimals: -1 }],
   ['command_schedule', { window_start: '24:00' }], ['command_schedule', { window_start: '7:00' }],

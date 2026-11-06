@@ -8,7 +8,7 @@ const { freshDb } = require('./helpers');
 const { listModules, SEED_DIR } = require('../tools/lib/schema');
 const { stripComments } = require('../tools/lib/sql');
 
-const SEEDED = ['system', 'vendor', 'protocol', 'alarm_class', 'device_state_code', 'condition', 'permission', 'role', 'role_permission'];
+const SEEDED = ['system', 'vendor', 'protocol', 'alarm_class', 'device_state_code', 'condition', 'permission', 'role', 'role_permission', 'space_type_rule'];
 
 function snapshot(db) {
   const out = {};
@@ -21,7 +21,7 @@ function snapshot(db) {
 
 test('seed modules exist and every INSERT is ON CONFLICT DO NOTHING', () => {
   const mods = listModules(SEED_DIR);
-  assert.deepEqual(mods.map((m) => m.name), ['01_lookups', '02_alarm', '03_rbac']);
+  assert.deepEqual(mods.map((m) => m.name), ['01_lookups', '02_alarm', '03_rbac', '04_space']);
   for (const m of mods) {
     const stmts = stripComments(m.sql).split(';').map((s) => s.trim()).filter(Boolean);
     for (const s of stmts) {
